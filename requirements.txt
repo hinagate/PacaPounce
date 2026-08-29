@@ -2,4 +2,5 @@
 mcp>=1.29.0
 alpaca-mcp-server>=2.3.0
 python-dotenv>=1.0.0
+tzdata>=2024.1
 pytest>=8.0.0
