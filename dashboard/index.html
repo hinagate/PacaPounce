@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="60">
+<title>PacaPounce - Patient AI Trading Agent</title><style>
+:root{--bg:#fbfbfa;--panel:#fff;--ink:#1c1c1a;--muted:#6b6b66;--line:#e5e4e0;
+--pass:#1a7f4b;--fail:#b3261e;--accent:#2f5fd8;--chip:#f2f1ed;--warn:#8a6100}
+@media (prefers-color-scheme:dark){:root{--bg:#151513;--panel:#1e1e1c;--ink:#eceae4;
+--muted:#9c9a93;--line:#33322e;--pass:#4ec27f;--fail:#ef6b60;--accent:#7fa2f5;
+--chip:#26251f;--warn:#d9a441}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:1120px;margin:0 auto;padding:34px 20px 90px}
+h1{font-size:28px;margin:0 0 4px;letter-spacing:-.025em}
+.sub{color:var(--muted);margin:0 0 30px;font-size:14px;max-width:70ch}
+section{margin:0 0 38px}
+.crit{display:flex;align-items:baseline;gap:10px;margin:0 0 14px;
+padding-bottom:8px;border-bottom:1px solid var(--line)}
+.crit .n{font-size:11px;font-weight:700;letter-spacing:.1em;color:var(--accent)}
+.crit h2{font-size:16px;margin:0;letter-spacing:-.01em}
+.crit .why{font-size:12px;color:var(--muted);margin-left:auto}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:12px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.tile .k{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+.tile .v{font-size:25px;font-weight:600;margin-top:3px;font-variant-numeric:tabular-nums}
+.tile .f{font-size:11px;color:var(--muted);margin-top:2px}
+.note{background:var(--chip);border:1px solid var(--line);border-radius:10px;
+padding:13px 16px;font-size:13px;color:var(--muted);margin-top:12px}
+.note b{color:var(--ink)}
+.warn{border-color:var(--warn)}
+.warn b{color:var(--warn)}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:13px;min-width:860px}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
+tbody tr:last-child td{border-bottom:none}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600}
+.ok{background:color-mix(in srgb,var(--pass) 16%,transparent);color:var(--pass)}
+.no{background:color-mix(in srgb,var(--fail) 16%,transparent);color:var(--fail)}
+.pos{color:var(--pass)}.neg{color:var(--fail)}
+.banner{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;
+background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:0 0 30px}
+.banner .b-item{background:var(--panel);padding:14px 16px;display:flex;flex-direction:column;gap:3px}
+.banner .b-k{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+.banner .b-v{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
+.refresh-btn{display:block;width:100%;border:0;border-radius:9px;background:var(--accent);
+color:#fff;padding:11px 16px;margin:16px 0 22px;font:600 13px/1.2 inherit;cursor:pointer}
+.refresh-btn:hover{filter:brightness(1.08)}
+.overview-head{display:flex;align-items:end;justify-content:space-between;gap:16px;margin:0 0 9px}
+.overview-head h2{font-size:17px;margin:0}.overview-head p{font-size:11px;color:var(--muted);margin:0}
+.simple-table{overflow-x:auto;border:1px solid var(--line);border-radius:9px;background:var(--panel);
+margin:0 0 20px}.simple-table table{min-width:0}.simple-table th,.simple-table td{white-space:normal}
+.simple-table th{background:var(--chip)}.simple-table td:first-child{font-weight:600}
+.decision-why{min-width:280px;max-width:540px;color:var(--muted);line-height:1.45}
+.deep-dive{margin:26px 0 0;border-top:1px solid var(--line);padding-top:18px}
+.deep-dive>summary{list-style:none;cursor:pointer;border:1px solid var(--line);border-radius:10px;
+background:var(--panel);padding:15px 18px;font-weight:650;color:var(--accent)}
+.deep-dive>summary::-webkit-details-marker{display:none}
+.deep-dive>summary:after{content:'+';float:right;font-size:20px;line-height:18px}
+.deep-dive[open]>summary:after{content:'2'}
+.deep-dive>section:first-of-type{margin-top:28px}
+.funnel{display:flex;flex-direction:column;gap:9px;margin:14px 0 6px}
+.fn-row{display:flex;align-items:center;gap:12px}
+.fn-label{width:150px;flex:none;font-size:12px;color:var(--muted);text-align:right}
+.fn-track{flex:1;min-width:0}
+.fn-bar{height:34px;border-radius:7px;display:flex;align-items:center;padding:0 12px;color:#fff;
+font-weight:600;font-size:13px;font-variant-numeric:tabular-nums;min-width:44px;
+background:linear-gradient(90deg,var(--accent),color-mix(in srgb,var(--accent) 45%,var(--panel)))}
+.fn-sub{width:120px;flex:none;font-size:11px;color:var(--muted)}
+.cbars{display:flex;flex-direction:column;gap:9px;margin:14px 0 6px}
+.cbar-row{display:flex;align-items:center;gap:12px}
+.cbar-label{width:180px;flex:none;font-size:12px;color:var(--muted);text-align:right}
+.cbar-track{flex:1;min-width:0;background:var(--chip);border-radius:6px;overflow:hidden;height:26px}
+.cbar-fill{height:100%;border-radius:6px;background:var(--accent)}
+.cbar-fill.pos{background:var(--pass)}.cbar-fill.neg{background:var(--fail)}
+.cbar-fill.mut{background:color-mix(in srgb,var(--muted) 55%,var(--panel))}
+.cbar-val{width:110px;flex:none;font-size:13px;font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
+@media(max-width:640px){.fn-label,.cbar-label{width:96px}.fn-sub{display:none}}
+details summary{cursor:pointer;color:var(--accent);font-size:12px}
+.checks{margin:8px 0 2px;padding-left:0;list-style:none;font-size:12px;white-space:normal}
+.checks li{padding:2px 0;color:var(--muted)}
+.checks .n{color:var(--fail);font-weight:600}.checks .y{color:var(--pass)}
+.thesis{white-space:normal;max-width:330px;color:var(--muted);font-size:12px}
+.bar{height:7px;border-radius:4px;background:var(--chip);overflow:hidden;margin-top:8px}
+.bar>i{display:block;height:100%;background:var(--accent)}
+.flow{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin:14px 0 12px}
+.flow-step{position:relative;background:var(--panel);border:1px solid var(--line);
+border-radius:10px;padding:14px;min-height:125px}
+.flow-step .step{font-size:10px;font-weight:700;letter-spacing:.09em;color:var(--accent)}
+.flow-step h3{font-size:14px;margin:5px 0 6px}.flow-step p{font-size:12px;color:var(--muted);margin:0}
+.flow-step:not(:last-child):after{content:'→';position:absolute;right:-10px;top:47px;
+z-index:2;color:var(--accent);font-weight:700;background:var(--bg);padding:0 2px}
+.intent-list{display:grid;gap:12px;margin-top:12px}
+.intent-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+.intent-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:12px}
+.intent-head h3{font-size:15px;margin:0}.intent-head .meta{font-size:11px;color:var(--muted)}
+.intent-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));gap:8px}
+.intent-field{background:var(--chip);border-radius:7px;padding:9px 10px}
+.intent-field .k{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.intent-field .v{font-size:13px;font-weight:600;margin-top:2px;overflow-wrap:anywhere}
+.intent-copy{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.intent-copy div{border-left:3px solid var(--accent);padding:7px 10px;background:var(--chip);font-size:12px}
+.intent-copy b{display:block;font-size:9px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+.resolution{margin-top:10px;padding:10px 12px;border:1px dashed var(--line);border-radius:8px;
+font-size:12px;color:var(--muted)}.resolution b{color:var(--ink)}
+.gate-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(205px,1fr));gap:9px;margin:12px 0}
+.gate-card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:12px}
+.gate-card .top{display:flex;align-items:center;gap:8px}.gate-card .seq{display:grid;place-items:center;
+width:24px;height:24px;border-radius:50%;background:var(--accent);color:white;font-size:11px;font-weight:700}
+.gate-card h3{font-size:13px;margin:0}.gate-card p{font-size:11px;color:var(--muted);margin:7px 0 0}
+.layer{font-size:9px;text-transform:uppercase;letter-spacing:.07em;color:var(--accent);margin-left:auto}
+.checks .m{color:var(--warn);font-weight:600}
+@media(max-width:800px){.flow{grid-template-columns:1fr}.flow-step{min-height:0}
+.flow-step:not(:last-child):after{content:'↓';right:auto;left:20px;top:auto;bottom:-13px}
+.intent-copy{grid-template-columns:1fr}}
+</style></head><body><div class="wrap">
+
+<h1>PacaPounce</h1>
+<p class="sub" style="margin-bottom:8px"><b>Team a-meowmeow</b> · The patient AI trading agent</p>
+<p class="sub">AI hunts. Alpaca MCP verifies. PacaPounce trades only when the opportunity survives.
+The LLM is creative but untrusted: it may suggest any thesis, but only deterministic,
+independently validated policy is allowed to touch the broker. Gate 1.4.0.</p>
+
+<section aria-labelledby="live-overview">
+<div class="overview-head"><div><h2 id="live-overview">Live account overview</h2>
+<p>Read-only broker state and the newest bounded decision windows.</p></div>
+<p>Snapshot generated 2026-08-29T08:24:52-04:00 ET · auto-reload 60s</p></div>
+<button class="refresh-btn" type="button" onclick="window.location.reload()">Reload latest broker snapshot</button>
+
+<h3 style="font-size:14px;margin:0 0 8px">Account</h3>
+<div class="simple-table"><table><thead><tr><th>Metric</th><th>Value</th></tr></thead>
+<tbody><tr><td>Paper account</td><td>PA3ZX2FIASSZ VERIFIED</td></tr><tr><td>Equity</td><td>$100,000.00</td></tr><tr><td>Cash</td><td>$100,000.00</td></tr><tr><td>Options buying power</td><td>$100,000.00</td></tr><tr><td>Daily P&amp;L</td><td>$0.00</td></tr><tr><td>Agent activity</td><td>0 option entries / 0 broker fills</td></tr><tr><td>Last equity (prior close)</td><td>$100,000.00</td></tr></tbody></table></div>
+<div class="note"><b>Account boundary verified.</b> Alpaca MCP and <code>ALPACA_ACCOUNT_ID</code> both identify <code>PA3ZX2FIASSZ</code>. Runtime ledger, monitor state, and MCP telemetry are isolated under this account.</div>
+
+<h3 style="font-size:14px;margin:24px 0 8px">Open positions</h3>
+<div class="simple-table"><table><thead><tr><th>Asset</th><th>Qty</th>
+<th>Avg entry</th><th>Market value</th><th>Unrealized P&amp;L</th></tr></thead>
+<tbody><tr><td colspan="5" style="color:var(--muted);font-weight:400">Account is flat — no open positions reported by Alpaca MCP.</td></tr></tbody></table></div>
+
+<div class="overview-head"><div><h2>Decision log — what the agent did and why</h2>
+<p>Newest six bounded windows plus submitted decisions; retries are collapsed.</p></div>
+<p>0 approved · 0 blocked</p></div>
+<div class="simple-table"><table><thead><tr><th>Time</th><th>Candidate</th><th>Decision</th>
+<th>Rationale</th><th>Gates</th></tr></thead><tbody><tr><td colspan="5" style="color:var(--muted);font-weight:400">No decision windows recorded yet.</td></tr></tbody></table></div>
+<div class="note"><b>Refresh semantics.</b> This static page reloads the newest snapshot;
+<code>run.py --loop</code> is the process that rebuilds it from Alpaca MCP. At market close,
+the final broker snapshot remains visible until the next session.</div>
+
+<h3 style="font-size:14px;margin:24px 0 8px">Second Paper strategy · NDX30_MR_01</h3>
+<div class="tiles">
+  <div class="tile"><div class="k">Staging status</div><div class="v" style="font-size:18px">NOT RUN</div>
+    <div class="f">awaiting the next 15:45 ET regular-session scan</div></div>
+  <div class="tile"><div class="k">Managed stock positions</div><div class="v">0</div>
+    <div class="f">maximum 3; one new entry/day</div></div>
+  <div class="tile"><div class="k">2024 SIP OOS</div><div class="v pos">PF 1.394</div>
+    <div class="f">146 trades · Sharpe 1.353 · max DD 1.82%</div></div>
+  <div class="tile"><div class="k">Frozen signal</div><div class="v" style="font-size:18px">RSI(2) &lt; 10</div>
+    <div class="f">price &gt; rising SMA200 · scan 15:45 ET</div></div>
+</div>
+<h3 style="font-size:13px;margin:18px 0 8px">Before / after · same historical fallback capital</h3>
+<div class="simple-table"><table><thead><tr><th>Comparison</th><th>Starting equity</th>
+<th>Ending equity</th><th>Incremental P&amp;L</th><th>Result</th></tr></thead><tbody>
+<tr><td>Before · strategy 2 absent</td><td>$100,000.00</td>
+<td>$100,000.00</td><td>$0.00</td><td>Fallback allocation remains idle</td></tr>
+<tr><td>After · NDX30_MR_01 (2024 OOS)</td><td>$100,000.00</td>
+<td>$104,975.26</td><td class="pos">$4,975.26 (+4.975%)</td>
+<td>78/146 wins · max DD 1.82%</td></tr>
+<tr><td>Earlier screen · 2023</td><td>$100,000.00</td>
+<td>$103,670.00</td>
+<td class="pos">+3.67%</td>
+<td>Positive, but PF 1.302 / Sharpe 0.886 failed the strict card</td></tr>
+</tbody></table></div>
+<div class="note"><b>Paper Staging, not production proof.</b> Python scans 30
+liquid Nasdaq names, sizes 0.5% equity risk with a
+2×ATR14 broker stop, and exits above EMA5 or after
+3 regular sessions. The AI reviews only timestamped
+<code>get_news</code> context and writes the thesis. <b>Earnings calendar independently
+verified: no.</b> News search is not presented as a deterministic earnings gate.</div>
+<div class="note warn"><b>Comparison boundary.</b> “Before” means the same fallback
+allocation stays idle; it is not a reconstructed options-strategy return. The stock
+OOS result is not simply added to options P&amp;L because the live orchestrator blocks
+stock entry whenever an option spread or opening order has reserved capital. Exact
+combined performance requires a synchronized historical option + stock event replay.</div>
+</section>
+
+<details class="deep-dive">
+<summary>Open full strategy, 16 gates, P&amp;L evidence, and execution audit</summary>
+
+<section>
+<div class="crit"><span class="n">HOW</span><h2>How AI intelligence becomes a paper trade</h2>
+<span class="why">AI proposes; deterministic policy disposes</span></div>
+<div class="flow">
+  <div class="flow-step"><span class="step">01 · ALPACA MCP</span><h3>Session permission</h3>
+    <p>Account identity, competition date, clock, orders, positions, and authorization
+    decide whether a new AI proposal is permitted. A broker-side block prevents the Poe call.</p></div>
+  <div class="flow-step"><span class="step">02 · AI</span><h3>Strategy intent</h3>
+    <p>gemini-3.7-flash reads an Alpaca MCP brief with 1D/5D returns, RV20,
+    nearest-ATM IV, IV/RV, and quote time, then returns direction, strategy,
+    DTE, target delta, width, thesis, and invalidation. Missing data stays missing.</p></div>
+  <div class="flow-step"><span class="step">03 · VALIDATE</span><h3>Strict intent schema</h3>
+    <p>Unknown fields, unsupported structures, and incoherent values are rejected before
+    a contract is priced.</p></div>
+  <div class="flow-step"><span class="step">04 · ALPACA MCP</span><h3>Resolve contracts</h3>
+    <p>Live chain, Greeks, OPRA bid/ask, bars, account, and positions determine the exact
+    contracts and executable economics.</p></div>
+  <div class="flow-step"><span class="step">05 · POLICY</span><h3>16 ordered gates</h3>
+    <p>Every current gate runs without short-circuiting. One failure vetoes the entire
+    proposal and all reasons remain visible.</p></div>
+  <div class="flow-step"><span class="step">06 · PAPER ONLY</span><h3>Execute and monitor</h3>
+    <p><code>run.py --loop</code> owns both entry hunting and the deterministic risk monitor,
+    including a restart-safe executable-profit ratchet, volatility response, re-entry
+    lifecycle, and close-of-session cleanup.</p></div>
+</div>
+<div class="note"><b>Authority boundary.</b> AI decides <em>what idea to investigate and why</em>.
+It never chooses an OCC symbol, trusts a price, calculates quantity, or sends an order.
+Alpaca data plus versioned policy decide the exact contract, whether it may trade, and how it exits.</div>
+<h2 style="font-size:14px;margin:26px 0 6px">Proposes freely, trades only what survives</h2>
+<p class="sub" style="margin-bottom:2px"><b>Signal, not retry noise.</b> 0 raw model
+attempts collapse into 0 decision windows. The funnel shows how
+many survive each stage to reach the broker. The full per-decision thesis, economics, and gate
+audit live in the <b>Presentation &amp; Execution</b> table below and in
+<a href="../data/accounts/PA3ZX2FIASSZ/verdicts.jsonl"><code>data/accounts/PA3ZX2FIASSZ/verdicts.jsonl</code></a>.</p>
+<div class="funnel"><div class="fn-row"><span class="fn-label">Raw AI attempts</span><div class="fn-track"><div class="fn-bar" style="width:6.0%"><span class="fn-val">0</span></div></div><span class="fn-sub">raw model calls</span></div><div class="fn-row"><span class="fn-label">Decision windows</span><div class="fn-track"><div class="fn-bar" style="width:6.0%"><span class="fn-val">0</span></div></div><span class="fn-sub">retries collapsed</span></div><div class="fn-row"><span class="fn-label">Trade-ready windows</span><div class="fn-track"><div class="fn-bar" style="width:6.0%"><span class="fn-val">0</span></div></div><span class="fn-sub">gate approved</span></div><div class="fn-row"><span class="fn-label">Orders submitted</span><div class="fn-track"><div class="fn-bar" style="width:6.0%"><span class="fn-val">0</span></div></div><span class="fn-sub">reached the broker</span></div></div>
+</section>
+
+<section>
+<div class="crit"><span class="n">01</span><h2>P&amp;L Performance</h2>
+<span class="why">Alpaca paper account, live</span></div>
+<div class="tiles">
+  <div class="tile"><div class="k">Account daily P&amp;L</div>
+    <div class="v neg">$0.00</div>
+    <div class="f">equity minus last equity</div></div>
+  <div class="tile"><div class="k">Strategy P&amp;L</div><div class="v">$0.00</div>
+    <div class="f">fill-derived, 0 broker fills</div></div>
+  <div class="tile"><div class="k">Open P&amp;L</div><div class="v">$0.00</div>
+    <div class="f">0 positions</div></div>
+  <div class="tile"><div class="k">Equity</div><div class="v">$100,000</div>
+    <div class="f">options approved L3 / enabled L3</div></div>
+  <div class="tile"><div class="k">Options buying power</div>
+    <div class="v">$100,000</div>
+    <div class="f">binding full-capital budget; equity multiplier 4.0x</div></div>
+  <div class="tile"><div class="k">Orders sent</div><div class="v">0</div>
+    <div class="f">of 0 approved</div></div>
+</div>
+<h2 style="font-size:14px;margin:26px 0 4px">Did the gate's forecast hold up?</h2>
+<p class="sub" style="margin-bottom:2px">What the gate <em>predicted</em> across approved trades,
+next to what the account actually realized. A gate that forecasts well keeps these bars close.</p>
+<div class="cbars"><div class="cbar-row"><span class="cbar-label">Predicted EV (approved)</span><div class="cbar-track"><div class="cbar-fill pos" style="width:0.0%"></div></div><span class="cbar-val pos">$0.00</span></div><div class="cbar-row"><span class="cbar-label">Realized strategy P&amp;L</span><div class="cbar-track"><div class="cbar-fill pos" style="width:0.0%"></div></div><span class="cbar-val pos">$0.00</span></div><div class="cbar-row"><span class="cbar-label">Account daily P&amp;L</span><div class="cbar-track"><div class="cbar-fill pos" style="width:0.0%"></div></div><span class="cbar-val pos">$0.00</span></div></div>
+<div class="note"><b>Predicted vs actual.</b> The gate forecast $0.00 of expected value across 0 approved option proposals. Fill-derived strategy P&amp;L: $0.00; account daily P&amp;L: $0.00. The difference is left visible for broker reconciliation. A short window is dominated by variance - this is a reconciliation, not evidence of edge.</div>
+<div class="note"><b>Latest position lifecycle.</b> No deterministic exit has been recorded yet.</div>
+<div class="note warn"><b>Tournament risk disclosure.</b> The configured
+<code>full_buying_power</code> objective may allocate up to
+100% of Alpaca's remaining options buying power to one
+defined-risk spread. One maximum-loss outcome can therefore consume nearly the entire
+options collateral budget. The 4x equity multiplier is displayed but never substituted
+for Alpaca's separate options buying-power authorization.</div>
+</section>
+
+<section>
+<div class="crit"><span class="n">02</span><h2>Technology Implementation</h2>
+<span class="why">Official Alpaca MCP server, stdio</span></div>
+<div class="tiles" id="tl"></div>
+<h2 style="font-size:14px;margin:26px 0 4px">MCP session supervisor · policy 1.5.0</h2>
+<p class="sub" style="margin-bottom:10px">Before Poe is called, the entry loop reconstructs
+permission from Alpaca. No daily trade counter or pending-order lock lives only in process memory.</p>
+<div class="gate-grid">
+  <div class="gate-card"><div class="top"><span class="seq">A</span><h3>Account identity</h3>
+    <span class="layer">MCP</span></div><p><code>get_account_info.account_number</code> must
+    exactly match <code>ALPACA_ACCOUNT_ID</code>. Entry, monitor mutation, and financial
+    presentation fail closed on mismatch; runtime evidence is account-scoped.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">B</span><h3>Regime-grounded AI</h3>
+    <span class="layer">MCP + AI</span></div><p><code>get_stock_latest_quote</code>,
+    <code>get_stock_bars</code>, <code>get_option_contracts</code>, and
+    <code>get_option_snapshot</code> create a timestamped brief of spot, 1D/5D returns,
+    RV20, nearest-ATM IV, and IV/RV. It is cached for 300s;
+    unavailable VIX or IV rank is never fabricated.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">1</span><h3>Trading session</h3>
+    <span class="layer">MCP</span></div><p><code>get_clock</code> + <code>get_calendar</code>
+    pause outside the regular session, including shortened days. MCP <code>next_open</code>
+    rolls the same process across nights, holidays, and weekends.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">2</span><h3>Pending-order lock</h3>
+    <span class="layer">MCP</span></div><p><code>get_orders(status=open)</code> blocks a new
+    proposal while any opening or closing multi-leg order is unresolved.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">3</span><h3>Restart-safe count</h3>
+    <span class="layer">MCP</span></div><p><code>get_orders(status=all)</code> groups parent
+    PacaPounce entries and chase revisions; <code>get_account_activities(FILL)</code> corroborates
+    child-leg execution without counting two legs as two trades.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">4</span><h3>Live exposure</h3>
+    <span class="layer">MCP</span></div><p><code>get_all_positions</code> reconstructs option
+    spreads and held symbols instead of trusting a local ledger.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">5</span><h3>Options authorization</h3>
+    <span class="layer">MCP</span></div><p><code>get_account_info</code> must report ACTIVE,
+    unblocked, approved and enabled at Level 3+, with positive options buying power.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">6</span><h3>Full-capital sizing</h3>
+    <span class="layer">MCP</span></div><p>The largest integer quantity whose complete
+    defined loss fits inside live <code>options_buying_power</code> is computed, gated,
+    and checked again immediately before submission.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">7</span><h3>Full-capital wait</h3>
+    <span class="layer">MCP</span></div><p>Once a full-buying-power spread is confirmed
+    open, entry hunting pauses before Poe is called while risk monitoring continues.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">8</span><h3>Fill-aware repricing</h3>
+    <span class="layer">MCP + POLICY</span></div><p>An unfilled opening order improves by at
+    most one cent per monitor cycle, never below the live natural credit. Before replacement,
+    its reserved defined loss is released in preflight; after cancellation,
+    <code>get_account_info</code> must confirm enough options BP. EV is recomputed at the
+    actual replacement limit, without charging the bid/ask concession twice. An MCP
+    <code>accepted</code> envelope is not success: <code>get_orders(status=all)</code> must
+    return the same client ID and an Alpaca broker order ID.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">9</span><h3>Profit high-water</h3>
+    <span class="layer">POLICY</span></div><p>Executable P&amp;L arms a persistent trail after
+    20% credit capture. Two confirmed givebacks close at
+    20%; high money volatility tightens the trail to
+    10% but cannot exit alone.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">10</span><h3>Better re-entry</h3>
+    <span class="layer">MCP + POLICY</span></div><p>Profit exits wait
+    30 minutes plus 10 calm, liquid minutes.
+    A new pair must improve post-cost EV/risk by 25%,
+    worsen no risk dimension, and uses 100% of options BP.
+    Risk exits lock the session.</p></div>
+</div>
+<h2 style="font-size:14px;margin:26px 0 4px">Second-strategy MCP lane</h2>
+<div class="gate-grid">
+  <div class="gate-card"><div class="top"><span class="seq">S1</span><h3>One bounded scan</h3>
+    <span class="layer">MCP + QUANT</span></div><p><code>get_stock_bars</code> supplies adjusted
+    daily and completed 15-minute SIP bars. Python computes SMA200, Wilder RSI(2), EMA5,
+    ATR14, ranking, quantity, and stop exactly once at 15:45 ET on normal sessions.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">S2</span><h3>Auditable event review</h3>
+    <span class="layer">MCP + AI</span></div><p><code>get_news</code> supplies timestamped articles
+    for the selected numerical candidate. Poe may veto concrete event risk and write the thesis.
+    The feed is not mislabeled as a verified earnings calendar.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">S3</span><h3>Broker-native protection</h3>
+    <span class="layer">MCP</span></div><p><code>place_stock_order</code> submits a Paper OTO with
+    a 2×ATR14 stop. <code>get_orders</code> must return the same client ID and an Alpaca order ID
+    before the dashboard records SUBMITTED.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">S4</span><h3>Deterministic lifecycle</h3>
+    <span class="layer">MCP + POLICY</span></div><p>The 30-second monitor reconciles broker
+    positions and stops, cancels the protective child before an EMA5/time exit, and uses
+    <code>get_calendar</code> to count regular holding sessions. The LLM never times exits.</p></div>
+</div>
+<div class="note"><b>Every Alpaca interaction goes through MCP.</b>
+<code>get_option_chain</code> and <code>get_option_snapshot</code> supply strikes, real bid/ask
+and Greeks; <code>place_option_order</code> submits atomic multi-leg orders with
+<code>order_class=mleg</code> and a negative limit price for credit. The LLM never names a
+strike - it emits intent, and deterministic code resolves it against the live chain.</div>
+<div class="note"><b>One-command paper session.</b> <code>run.py --loop</code> waits for the
+opening bell, starts and supervises both the auto-exit monitor and
+60-second dashboard builder,
+hunts only while entry controls permit, and writes a final dashboard snapshot at close or on
+Ctrl+C. It then stops both helpers, sleeps toward MCP <code>next_open</code>, and restarts
+them automatically for the next trading day. If monitoring is unavailable,
+entries fail closed. In <code>full_buying_power</code> mode the annual target remains a
+visible benchmark; it does not stop a positive-EV entry or force an early target exit.</div>
+<div class="note"><b>Why Poe activity can appear in a burst.</b> One decision window may make
+up to 2 separate model calls when an intent is invalid, cannot be built,
+or is vetoed. The window then closes. <code>--loop</code> opens another window only after the next
+60-second MCP refresh says trading is still allowed. This is
+bounded proposal/revision activity, not an unrecorded continuous reasoning session.</div>
+</section>
+
+<section>
+<div class="crit"><span class="n">03</span><h2>Creativity &amp; Originality</h2>
+<span class="why">The gate, and its validation</span></div>
+<div class="tiles">
+  <div class="tile"><div class="k">Decision windows</div><div class="v">0</div>
+    <div class="f">independent hunt cycles</div></div>
+  <div class="tile"><div class="k">Trade-ready windows</div><div class="v">0</div>
+    <div class="f">at least one approved result</div></div>
+  <div class="tile"><div class="k">Blocked windows</div><div class="v">0</div>
+    <div class="f">policy preserved capital</div></div>
+  <div class="tile"><div class="k">Raw AI attempts</div><div class="v">0</div>
+    <div class="f">includes 0 bounded revisions</div></div>
+  <div class="tile"><div class="k">Validation p-value</div>
+    <div class="v pos">0.0040</div>
+    <div class="f">12,000 trials, permutation</div></div>
+</div>
+<h2 style="font-size:14px;margin:26px 0 4px">Current entry stack: 16 gates, one by one</h2>
+<p class="sub" style="margin-bottom:10px">Intent parsing, coherence validation, and contract
+construction happen first. A fully resolved candidate then passes through every gate below in
+this exact order; evaluation never stops at the first failure.</p>
+<div class="gate-grid" id="gate-pipeline"></div>
+<div class="note"><b>Version transparency.</b> The current stack is gate
+1.4.0. Historical live entries were recorded under gate 1.0.0 with 12
+checks; 1.1.0 added the annual-target budget, and 1.2.0 added broker-owned options eligibility
+plus options-buying-power sizing. Gate 1.3.0 added symmetric call-tail economics and the
+call-rebound guard. Historical detail marks later checks <em>not recorded</em>
+instead of retroactively claiming they ran.</div>
+<div class="note"><b>The gate was tested against outcomes, not asserted.</b>
+The harness scores the trades the gate <em>rejected</em> as well as the ones it approved -
+the counterfactual every naive version skips. Across 12,000 independent
+opportunities, approved trades averaged $8.23 and vetoed trades
+-$0.47, a separation of $8.70
+per trade at p=0.0040. Reproduce with
+<code>python scripts/validate_gate.py --trials 12000</code>.</div>
+<h2 style="font-size:14px;margin:26px 0 4px">Why an economic gate at all</h2>
+<p class="sub" style="margin-bottom:2px">Total P&amp;L by policy across the same
+12,000 simulated opportunities. Operational rules alone (defined risk, size caps,
+liquidity, limit orders) prevent malformed trades, not unprofitable ones — they can score
+<em>worse</em> than no filter because they reject trades for being large, not underpaid.</p>
+<div class="cbars"><div class="cbar-row"><span class="cbar-label">Trade everything</span><div class="cbar-track"><div class="cbar-fill mut" style="width:82.3%"></div></div><span class="cbar-val mut">$19,901.00</span></div><div class="cbar-row"><span class="cbar-label">Operational gates only</span><div class="cbar-track"><div class="cbar-fill neg" style="width:4.6%"></div></div><span class="cbar-val neg">-$1,103.71</span></div><div class="cbar-row"><span class="cbar-label">Full economic gate</span><div class="cbar-track"><div class="cbar-fill pos" style="width:100.0%"></div></div><span class="cbar-val pos">$24,174.57</span></div></div>
+<div class="note">Option delta is the market's own estimate of P(finishing ITM); comparing it
+against the payoff on offer, net of measured bid/ask friction, requires no forecast at all.</div>
+<h2 style="font-size:14px;margin:26px 0 10px">Why decision windows were blocked</h2>
+<p class="sub" style="margin-bottom:10px">One representative result per window prevents five
+revisions of the same opportunity from masquerading as five independent vetoes.</p>
+<div class="tiles" id="vr"></div>
+</section>
+
+<section>
+<div class="crit"><span class="n">04</span><h2>Presentation &amp; Execution</h2>
+<span class="why">Executions plus recent decision evidence</span></div>
+<div class="scroll"><table><thead><tr>
+<th>#</th><th>Verdict</th><th>Trade</th><th class="num">Credit</th><th class="num">Max loss</th>
+<th class="num">Breakeven WR</th><th class="num">Implied WR</th><th class="num">Edge</th>
+<th class="num">Friction</th><th class="num">EV net</th><th>AI rationale</th><th>Gate audit</th>
+</tr></thead><tbody id="tb"></tbody></table></div>
+<div class="note"><b>Presentation is bounded; audit is complete.</b> Showing
+0 of 0 raw rows: every approved or
+submitted result plus representative outcomes from the newest
+10 decision windows. 0
+older or retry-level rows are omitted from this page. They are not deleted: the full
+append-only record, including every gate result and gate version, remains in
+<a href="../data/accounts/PA3ZX2FIASSZ/verdicts.jsonl"><code>data/accounts/PA3ZX2FIASSZ/verdicts.jsonl</code></a>.</div>
+</section>
+
+</details>
+</div><script>const DATA={"rows": [], "presentation": {"raw_attempts": 0, "decision_windows": 0, "approved_windows": 0, "submitted_windows": 0, "blocked_windows": 0, "collapsed_retries": 0, "shown_rows": 0, "suppressed_rows": 0, "recent_window_limit": 10, "veto_reasons": {}}, "tools": {"get_account_info": 1, "get_all_positions": 1, "get_account_activities": 1}, "gates": [{"name": "defined_risk", "label": "Defined risk", "layer": "Structure", "question": "Is every short option protected by a long option?"}, {"name": "allowlist", "label": "Underlying allowlist", "layer": "Policy", "question": "Is the underlying explicitly permitted?"}, {"name": "alpaca_options_eligible", "label": "Alpaca options eligibility", "layer": "Broker", "question": "Does Alpaca report an active, unblocked Level 3+ options account with buying power?"}, {"name": "position_size", "label": "Position size", "layer": "Sizing", "question": "Is the requested contract count below the hard ceiling?"}, {"name": "open_positions", "label": "Open-position limit", "layer": "Portfolio", "question": "Can the portfolio accept another position?"}, {"name": "daily_trade_limit", "label": "Daily trade limit", "layer": "Portfolio", "question": "Is the agent still inside its daily activity budget?"}, {"name": "annual_target_budget", "label": "Objective budget", "layer": "Objective", "question": "Does the selected objective permit another entry?"}, {"name": "no_duplicate", "label": "Duplicate exposure", "layer": "Portfolio", "question": "Is the proposed short contract absent from current holdings?"}, {"name": "quote_freshness", "label": "Quote freshness", "layer": "Market data", "question": "Are both leg quotes recent enough to trust?"}, {"name": "liquidity", "label": "Liquidity", "layer": "Market data", "question": "Are both bid/ask spreads inside the liquidity threshold?"}, {"name": "max_loss_cap", "label": "Per-contract loss cap", "layer": "Risk", "question": "Is defined loss per contract inside policy?"}, {"name": "total_risk_cap", "label": "Alpaca buying-power cap", "layer": "Risk", "question": "Can reported options buying power collateralize the entire defined loss?"}, {"name": "limit_order_only", "label": "Limit order only", "layer": "Execution", "question": "Will the spread be submitted as a limit order?"}, {"name": "call_rebound_risk", "label": "Call rebound risk", "layer": "Economics", "question": "For a call spread, has the index avoided a sharp one-day selloff that can rebound?"}, {"name": "reentry_quality", "label": "Re-entry improvement", "layer": "Lifecycle", "question": "After a profit exit, is this candidate materially better and no riskier than the exited trade?"}, {"name": "economic_ev", "label": "Economic EV", "layer": "Economics", "question": "Is expected value positive after measured execution friction?"}], "ai_model": "gemini-3.7-flash"};
+const R=DATA.rows,D=DATA.presentation,T=DATA.tools,G=DATA.gates;
+const f=(n,d=2)=>n==null?'-':(n>=0?'+':'')+n.toFixed(d);
+const esc=v=>String(v??'').replace(/[&<>"']/g,ch=>({
+  '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const words=v=>esc(String(v??'-').replaceAll('_',' '));
+
+// Canonical current gate sequence, shared with the Python evaluator.
+const gp=document.getElementById('gate-pipeline');
+G.forEach((g,idx)=>{const d=document.createElement('div');d.className='gate-card';
+  d.innerHTML=`<div class="top"><span class="seq">${idx+1}</span><h3>${esc(g.label)}</h3>
+    <span class="layer">${esc(g.layer)}</span></div><p>${esc(g.question)}</p>`;
+  gp.appendChild(d);});
+
+const tb=document.getElementById('tb');
+R.forEach(r=>{
+  const v=r.verdict,e=(v&&v.economics)||{},ok=v&&v.approved;
+  const checks=(v&&v.checks)||[],byName=new Map(checks.map(c=>[c.name,c]));
+  const passed=checks.filter(c=>c.passed).length,failed=checks.length-passed;
+  const ordered=G.map((g,idx)=>{
+    const c=byName.get(g.name);
+    return c
+      ? `<li><span class="${c.passed?'y':'n'}">${c.passed?'PASS':'FAIL'}</span> ${idx+1}. ${esc(g.label)} — ${esc(c.detail)}</li>`
+      : `<li><span class="m">NOT RECORDED</span> ${idx+1}. ${esc(g.label)} — added after gate ${esc(r.gate_version)}</li>`;
+  }).join('');
+  const tr=document.createElement('tr');
+  tr.innerHTML=`<td>${r.n}</td>
+   <td><span class="badge ${ok?'ok':'no'}">${ok?'APPROVED':'VETOED'}</span></td>
+   <td>${esc(r.label)}</td>
+   <td class="num">${e.credit!=null?'$'+e.credit.toFixed(2):'-'}</td>
+   <td class="num">${e.max_loss_usd!=null?'$'+e.max_loss_usd.toFixed(0):'-'}</td>
+   <td class="num">${e.breakeven_wr!=null?(e.breakeven_wr*100).toFixed(1)+'%':'-'}</td>
+   <td class="num">${e.implied_wr!=null?(e.implied_wr*100).toFixed(1)+'%':'-'}</td>
+   <td class="num ${e.edge_pp>0?'pos':'neg'}">${e.edge_pp!=null?f(e.edge_pp,1)+'pp':'-'}</td>
+   <td class="num">${e.friction_usd!=null?'$'+e.friction_usd.toFixed(2):'-'}</td>
+   <td class="num ${e.ev_net_usd>0?'pos':'neg'}"><b>${e.ev_net_usd!=null?'$'+f(e.ev_net_usd):'-'}</b></td>
+   <td class="thesis"><b>Thesis:</b> ${esc((r.intent||{}).thesis||'-')}<br><br>
+     <b>Invalidation:</b> ${esc((r.intent||{}).invalidation||'-')}</td>
+   <td>${v?`<details><summary>${checks.length}/${G.length} recorded · ${passed} pass · ${failed} fail</summary>
+     <ul class="checks">${ordered}</ul></details>`:'Not scored'}</td>`;
+  tb.appendChild(tr);
+});
+
+const vr=document.getElementById('vr'),vre=Object.entries(D.veto_reasons||{});
+if(!vre.length) vr.innerHTML='<div class="note">No decision window has been blocked yet; failed gates will appear here as evidence accumulates.</div>';
+vre.forEach(([k,n])=>{
+  const pct=D.blocked_windows?(n/D.blocked_windows*100):0;
+  const d=document.createElement('div');d.className='tile';
+  d.innerHTML=`<div class="k">${esc(k)}</div><div class="v">${n}</div>
+    <div class="f">${pct.toFixed(0)}% of blocked windows</div>
+    <div class="bar"><i style="width:${pct.toFixed(0)}%"></i></div>`;
+  vr.appendChild(d);
+});
+const tl=document.getElementById('tl');
+const te=Object.entries(T).sort((a,b)=>b[1]-a[1]);
+if(!te.length){tl.innerHTML='<div class="tile"><div class="k">MCP calls</div><div class="v">0</div><div class="f">run the agent to populate</div></div>';}
+te.forEach(([k,n])=>{const d=document.createElement('div');d.className='tile';
+  d.innerHTML=`<div class="k">${esc(k)}</div><div class="v">${n}</div><div class="f">MCP tool calls</div>`;
+  tl.appendChild(d);});
+</script></body></html>

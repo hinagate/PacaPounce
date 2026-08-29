@@ -1,0 +1,56 @@
+{
+  "strategy_id": "NDX30_MR_01",
+  "status": "PAPER_STAGING",
+  "decision": "PROMOTE_TO_HACKATHON_PAPER_ONLY",
+  "data_source": "Alpaca MCP get_stock_bars, SIP, adjustment=all",
+  "order_calls": 0,
+  "frozen_policy": {
+    "universe_size": 30,
+    "signal_time_et": "15:30 completed bar observed at 15:45",
+    "entry": "price > SMA200; SMA200 rising one session; Wilder RSI(2) < 10",
+    "ranking": "lowest RSI(2), maximum one entry per day, GOOG/GOOGL issuer deduplication",
+    "risk": "0.5% equity risk; 20% max notional; 2x ATR14 stop; 3 concurrent positions",
+    "exit": "15:45 price > EMA5 or 3 regular holding sessions",
+    "friction": "3 bps on entry and 3 bps on exit"
+  },
+  "oos_2024": {
+    "sessions": 249,
+    "raw_signals": 405,
+    "trades": 146,
+    "wins": 78,
+    "losses": 68,
+    "win_rate": 0.5342,
+    "net_pnl_usd_on_100k": 4975.26,
+    "return_pct": 4.9753,
+    "profit_factor": 1.3942,
+    "sharpe": 1.3532,
+    "max_drawdown_pct": 1.8224,
+    "expectancy_usd_per_trade": 34.08,
+    "max_positions": 3,
+    "largest_abs_symbol_contribution": {
+      "symbol": "NVDA",
+      "pct": 41.7
+    }
+  },
+  "screen_2023": {
+    "trades": 120,
+    "return_pct": 3.67,
+    "profit_factor": 1.3015,
+    "sharpe": 0.8858,
+    "strict_card_passed": false
+  },
+  "paper_promotion_thresholds": {
+    "minimum_trades": 50,
+    "minimum_profit_factor": 1.35,
+    "minimum_sharpe": 1.2,
+    "maximum_drawdown_pct": 8.0,
+    "minimum_win_rate": 0.45,
+    "positive_expectancy_required": true
+  },
+  "limitations": [
+    "2023 was positive but did not pass the strict promotion card.",
+    "Historical simulation used modeled 3 bps friction, not live stock fills.",
+    "Alpaca get_news is not an independently verified earnings calendar.",
+    "Paper staging is not evidence of production alpha or future profitability."
+  ]
+}

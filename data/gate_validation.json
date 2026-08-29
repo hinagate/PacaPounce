@@ -1,0 +1,18 @@
+{
+  "trials": 12000,
+  "seed": 42,
+  "approved": 2937,
+  "vetoed": 9063,
+  "pass_rate": 0.2447,
+  "total_pnl_if_traded_everything": 19901.0,
+  "total_pnl_gate_approved_only": 24174.57,
+  "total_pnl_operational_gate_only": -1103.71,
+  "permutation_test": {
+    "mean_approved": 8.23,
+    "mean_vetoed": -0.47,
+    "observed_separation": 8.7,
+    "permutations": 2000,
+    "p_value": 0.004
+  },
+  "gate_version": "1.2.0"
+}

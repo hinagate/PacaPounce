@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.env
+data/*.jsonl
+data/*.log
+data/risk_state.json
+data/mcp_calls.json
+data/accounts/
+.venv/
