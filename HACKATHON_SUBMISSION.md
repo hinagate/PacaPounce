@@ -340,7 +340,7 @@ ledger records decisions, but it is never treated as the P&L source of truth.
 | MCP transport | Official `alpaca-mcp-server --transport stdio`; concurrent calls share one session | `veto/mcp_client.py` |
 | Trading account | Paper mode pinned by `ALPACA_PAPER_TRADE=true` and `paper-api.alpaca.markets` | `veto/config.py`, `veto/mcp_client.py` |
 | Account identity boundary | Live MCP `account_number` must exactly match the configured submission ID before entry or monitor mutation; financial dashboard fields fail closed | `veto/session.py`, `scripts/monitor.py`, `scripts/build_dashboard.py` |
-| Account-scoped runtime | Verdict ledger, session log, ratchet/re-entry state, and MCP counters are isolated under `data/accounts/<account-id>/` | `veto/config.py`, `veto/ledger.py`, `veto/risk_state.py` |
+| Account-scoped runtime | Verdict ledger, session log, ratchet/re-entry state, and MCP counters are isolated under the gitignored `data/accounts/<account-id>/` | `veto/config.py`, `veto/ledger.py`, `veto/risk_state.py` |
 | Market context | SIP spot plus completed daily bars and nearest-ATM option snapshots produce timestamped 1D/5D returns, RV20, ATM IV, and IV/RV; cached for five minutes, with unavailable VIX/IV rank never fabricated | `veto/regime.py`, `run.py` |
 | Contract discovery | Option chains, Greeks, IV, bid/ask, timestamps | `veto/builder.py` |
 | Historical context | Completed daily stock bars for model-grounding returns and realized-volatility estimation | `veto/regime.py`, `veto/builder.py` |
@@ -359,7 +359,7 @@ ledger records decisions, but it is never treated as the P&L source of truth.
 | Agent CLI | `--check`, `--propose`, `--trade`, `--measure`, `--loop`, `--summary` | `run.py` |
 | Failure policy | Incomplete MCP session state blocks entry instead of falling back to local memory | `veto/session.py`, `run.py` |
 | Safety boundary | MCP output envelope stripped; market data is never executed as model instruction | `veto/mcp_client.py` |
-| Observability | Overview-first dashboard with live account, broker positions, and bounded decision log; expandable MCP call counts, complete append-only JSONL audit, retry-aware decision-window summaries, every approved/submitted decision, broker-reconciled exit reason and fill, and atomic 60-second snapshots | `data/`, `scripts/build_dashboard.py`, `veto/risk_state.py` |
+| Observability | Overview-first dashboard with live account, broker positions, and bounded decision log; expandable MCP call counts, complete append-only JSONL audit, retry-aware decision-window summaries, every approved/submitted decision, broker-reconciled exit reason and fill, and atomic 60-second snapshots. Runtime snapshots go to gitignored `dashboard/runtime/`; the tracked Pages artifact stays Day-0. | `data/`, `scripts/build_dashboard.py`, `veto/risk_state.py` |
 
 Evidence snapshot after the live trade included 27+ account calls, 50 option-chain
 calls, 43 option-snapshot calls, 75 underlying-quote calls, three multi-leg order

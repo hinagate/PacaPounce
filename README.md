@@ -26,7 +26,7 @@ process restarts. Public runtime configuration uses `PACAPOUNCE_*` variables.
 ```powershell
 cd PacaPounce
 ..\.venv\Scripts\python.exe run.py --summary                # ledger stats
-..\.venv\Scripts\python.exe scripts\build_dashboard.py      # live dashboard snapshot
+..\.venv\Scripts\python.exe scripts\build_dashboard.py      # ignored live snapshot
 start dashboard\index.html                                  # open the judge view
 ```
 
@@ -288,7 +288,7 @@ python scripts/monitor.py --once          # inspect current paper position once
 python scripts/monitor.py                 # observe through the market close
 python scripts/monitor.py --execute       # auto-exits without the proposal loop
 
-python scripts/build_dashboard.py          # render dashboard/index.html once
+python scripts/build_dashboard.py          # render ignored dashboard/runtime/index.html once
 python scripts/build_dashboard.py --watch  # standalone 60-second live rebuild
 pytest tests/ -q
 ```
@@ -462,6 +462,9 @@ veto/gates.py              13 deterministic controls + the economic gate
 veto/executor.py           multi-leg paper orders
 veto/ledger.py             append-only verdict log
 scripts/build_dashboard.py renders/watches the atomic live dashboard snapshot
+at `dashboard/runtime/index.html`. That directory and all account-scoped logs
+are gitignored. The tracked `dashboard/index.html` is a frozen Day-0 artifact
+for GitHub Pages, so running the agent never dirties or leaks into the public repo.
 tests/test_gates.py        gate tests, including the S13 case
 tests/test_session.py      close, pending-order, restart-count, and AI-block tests
 tests/test_regime.py       MCP feature calculation, selection, and prompt tests

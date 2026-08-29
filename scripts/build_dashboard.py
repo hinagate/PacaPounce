@@ -11,9 +11,11 @@ Data is embedded rather than fetched, so the page works from file://, GitHub
 Pages, or any static host with no CORS configuration.
 
 Usage:
-    python scripts/build_dashboard.py
+    python scripts/build_dashboard.py              # ignored runtime snapshot
     python scripts/build_dashboard.py --no-live    # skip the Alpaca call
     python scripts/build_dashboard.py --watch      # rebuild continuously
+    python scripts/build_dashboard.py --output dashboard/index.html
+                                                  # explicit public snapshot
 """
 from __future__ import annotations
 
@@ -32,7 +34,8 @@ sys.path.insert(0, str(ROOT))
 
 from veto import config, gates, ledger, mean_reversion, risk_state  # noqa: E402
 
-OUT = ROOT / "dashboard" / "index.html"
+PUBLIC_OUT = ROOT / "dashboard" / "index.html"
+OUT = ROOT / "dashboard" / "runtime" / "index.html"
 RECENT_DECISION_WINDOWS = 10
 
 CSS = """
@@ -601,7 +604,10 @@ def exit_block(exit_evidence: dict | None) -> str:
 {broker_note}"""
 
 
-def build(live: bool = True) -> Path:
+def build(live: bool = True, output: Path | None = None) -> Path:
+    destination = output or OUT
+    if not destination.is_absolute():
+        destination = ROOT / destination
     entries = ledger.load()
     summary = ledger.summary()
     selected_entries, presentation = presentation_entries(entries)
@@ -1160,17 +1166,21 @@ append-only record, including every gate result and gate version, remains in
 </details>
 </div><script>const DATA={payload};{JS}</script></body></html>"""
 
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    temporary = OUT.with_suffix(OUT.suffix + ".tmp")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
     temporary.write_text(html, encoding="utf-8")
-    os.replace(temporary, OUT)
-    return OUT
+    os.replace(temporary, destination)
+    return destination
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-live", action="store_true", help="skip the Alpaca P&L fetch")
     ap.add_argument("--watch", action="store_true", help="rebuild until interrupted")
+    ap.add_argument(
+        "--output", type=Path,
+        help="output path; default dashboard/runtime/index.html is gitignored",
+    )
     ap.add_argument(
         "--interval", type=int, default=config.DASHBOARD_REFRESH_INTERVAL_SEC,
         help="watch rebuild interval in seconds",
@@ -1179,7 +1189,7 @@ if __name__ == "__main__":
     interval = max(10, a.interval)
     try:
         while True:
-            p = build(live=not a.no_live)
+            p = build(live=not a.no_live, output=a.output)
             print(f"wrote {p} ({p.stat().st_size:,} bytes)", flush=True)
             if not a.watch:
                 break

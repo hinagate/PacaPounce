@@ -483,7 +483,8 @@ def _start_dashboard() -> subprocess.Popen:
         raise RuntimeError(f"dashboard builder exited during startup (code {process.returncode})")
     print(
         f"  DASHBOARD STARTED - pid={process.pid}; refresh="
-        f"{config.DASHBOARD_REFRESH_INTERVAL_SEC}s",
+        f"{config.DASHBOARD_REFRESH_INTERVAL_SEC}s; "
+        "local=dashboard/runtime/index.html",
         flush=True,
     )
     return process
@@ -518,7 +519,11 @@ def _stop_dashboard(process: subprocess.Popen | None) -> None:
             check=True,
             timeout=60,
         )
-        print("  DASHBOARD FINAL SNAPSHOT WRITTEN", flush=True)
+        print(
+            "  DASHBOARD FINAL SNAPSHOT WRITTEN - "
+            "dashboard/runtime/index.html",
+            flush=True,
+        )
     except Exception as exc:
         print(
             f"  DASHBOARD FINAL REFRESH FAILED - {type(exc).__name__}: {exc}",

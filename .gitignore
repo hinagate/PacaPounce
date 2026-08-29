@@ -1,9 +1,15 @@
 __pycache__/
 *.pyc
+.pytest_cache/
 .env
+# Runtime audit/state. The public repository contains only frozen research
+# cards and the Day-0 dashboard; no paper-account activity is versioned.
 data/*.jsonl
 data/*.log
 data/risk_state.json
 data/mcp_calls.json
 data/accounts/
+# run.py --loop writes the live 60-second snapshot here. The tracked
+# dashboard/index.html remains the public Day-0 GitHub Pages artifact.
+dashboard/runtime/
 .venv/

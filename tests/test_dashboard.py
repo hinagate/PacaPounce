@@ -8,6 +8,15 @@ from scripts import build_dashboard  # noqa: E402
 from veto import gates, mcp_client  # noqa: E402
 
 
+def test_default_runtime_dashboard_is_separate_from_public_day_zero():
+    assert build_dashboard.OUT == (
+        build_dashboard.ROOT / "dashboard" / "runtime" / "index.html"
+    )
+    assert build_dashboard.PUBLIC_OUT == (
+        build_dashboard.ROOT / "dashboard" / "index.html"
+    )
+
+
 def test_account_mismatch_suppresses_all_financial_fields(monkeypatch):
     monkeypatch.setattr(build_dashboard.config, "ALPACA_ACCOUNT_ID", "EXPECTED")
     raw = {
