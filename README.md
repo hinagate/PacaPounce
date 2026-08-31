@@ -92,7 +92,8 @@ until four-leg construction, payoff, sizing, monitoring, and validation exist.
 ## Second Paper strategy: NDX30 long-call mean reversion
 
 The same `run.py --loop` process gets one deterministic second-strategy decision
-at 15:45 ET on a normal 16:00 session. It scans 30 liquid Nasdaq underlyings and
+at each decision window of a normal 16:00 session — 10:00 and 15:45 ET for the
+competition — scanning 14 liquid Nasdaq underlyings and
 ranks names whose completed 15:30 bar is above a rising SMA200 while Wilder
 RSI(2) is below 10. Alphabet share classes are issuer-deduplicated. The best
 surviving signal is expressed as a single long call—never as stock. The
@@ -104,7 +105,7 @@ everything and the second strategy was structurally unable to place an order.
   0.55–0.85 and relative bid/ask at most 6%, and submits a `buy_to_open` limit
   at the ask through Alpaca MCP. Among affordable contracts it takes the one
   with the cheapest carry, breaking ties toward 0.70 delta.
-- One 15:45 window may open several positions. Each is resolved, gated, and
+- One window may open several positions. Each is resolved, gated, and
   **independently reviewed by the LLM** against its own timestamped Alpaca news
   pull, so deploying a portfolio is a portfolio of separate AI decisions rather
   than one bulk allocation.
@@ -116,7 +117,7 @@ everything and the second strategy was structurally unable to place an order.
 - `get_orders` must confirm the client ID and Alpaca broker order ID before
   SUBMITTED is recorded.
 - The 30-second monitor sends a `sell_to_close` limit at the live bid when the
-  underlying hits its 2×ATR stop, recovers above EMA5 at 15:45, or reaches the
+  underlying hits its 2×ATR stop, recovers above EMA5 at the last window, or reaches the
   third normal session. The LLM never selects the contract, size, or exit.
 - LLM sees the top numeric candidate plus timestamped Alpaca `get_news` output.
   It may veto a concrete news/event risk and writes the thesis. `get_news` is
@@ -279,10 +280,17 @@ least liquid ones. Restricting it does not create signals on days like that one;
 it makes the ranked candidate list actionable instead of top-heavy with names
 the builder will always reject.
 
-Deployment coverage comes from the RSI threshold rather than the universe: over
-the same ten sessions, RSI(2)<10 left 70% of sessions with a deployable
-candidate and RSI(2)<25 leaves 90%. Since the lane only needs to deploy once at
-the start of the window, two sessions at 90% is about 99%.
+Deployment coverage was then measured properly, over 120 sessions rather than
+ten, and it is the weakest part of this configuration. Only **72.5%** of
+sessions produce a candidate at all, and misses **cluster**: the probability of
+a miss is 53% after a miss against 17% after a hit, and the sample contains a
+nine-session drought. Assuming independence would have put two-session coverage
+at 92%; the observed figure is **85.7%**.
+
+That clustering is why the lane scans twice a session (10:00 and 15:45) instead
+of once. A single 15:45 scan sees only the completed 15:30 bar, so a name that
+is oversold in the morning and recovers into the close is never seen at all, and
+a session without a 15:30 signal deploys nothing.
 
 **Three things this is not.** It is not a claim that long calls have positive
 expected value here — [the measured evidence](data/ndx30_option_mr_validation.json)
@@ -332,7 +340,7 @@ dishonest label.
   Verdict ledger ............. every proposal, approved and rejected,
                                append-only, with the gate version hash
 
-  15:45 options MR lane ....... SIP D1 + completed 15m bars -> SMA/RSI/ATR/EMA
+  options MR lane (10:00,15:45)  SIP D1 + completed 15m bars -> SMA/RSI/ATR/EMA
         |                       one top underlying; options capital must be clear
         v
   Alpaca news + LLM review .... event-risk veto/thesis only; no fake earnings claim

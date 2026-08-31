@@ -676,41 +676,84 @@ def broker_submission_confirmed(order: dict | None) -> bool:
     return bool(order and order.get("id") and status not in FAILED_ORDER_STATES)
 
 
-def _normal_entry_window(snapshot) -> tuple[bool, str]:
+def _normal_entry_window(snapshot) -> tuple[str | None, str]:
+    """Return the key of the decision window now open, if any."""
     if not snapshot.market_open or snapshot.regular_close is None:
-        return False, "regular market is not open"
+        return None, "regular market is not open"
     if snapshot.regular_close.time().replace(tzinfo=None) != wall_time(16):
-        return False, f"early-close session ends {snapshot.regular_close.time()}"
-    start = wall_time(15, config.OPTION_MR_DECISION_MINUTE)
-    end = wall_time(15, min(config.OPTION_MR_DECISION_MINUTE + 10, 59))
+        return None, f"early-close session ends {snapshot.regular_close.time()}"
     current = snapshot.now_et.time().replace(tzinfo=None)
-    return start <= current <= end, f"decision window {start.strftime('%H:%M')}-{end.strftime('%H:%M')} ET"
+    for hour, minute in config.OPTION_MR_DECISION_WINDOWS:
+        start = wall_time(hour, minute)
+        end_minute = minute + 10
+        end = wall_time(hour + end_minute // 60, end_minute % 60)
+        if start <= current <= end:
+            return (
+                f"{hour:02d}:{minute:02d}",
+                f"decision window {start.strftime('%H:%M')}-{end.strftime('%H:%M')} ET",
+            )
+    listed = ", ".join(f"{h:02d}:{m:02d}" for h, m in config.OPTION_MR_DECISION_WINDOWS)
+    return None, f"outside the {listed} decision window(s)"
 
 
-def _transient_retry_allowed(snapshot) -> bool:
-    final_decision_at = snapshot.now_et.replace(
-        hour=15, minute=config.OPTION_MR_DECISION_MINUTE,
-        second=0, microsecond=0,
-    ) + timedelta(minutes=8)
-    return snapshot.now_et < final_decision_at
+def _window_start(snapshot, window_key: str) -> datetime:
+    hour, minute = (int(part) for part in window_key.split(":", 1))
+    return snapshot.now_et.replace(
+        hour=hour, minute=minute, second=0, microsecond=0
+    )
 
 
-def _write_decision(state: dict, snapshot, status: str, checks: list[dict], **payload) -> dict:
-    state["last_scan_date"] = snapshot.session_date
-    state["last_decision"] = {"status": status, "at": snapshot.now_et.isoformat(), **payload}
+def _transient_retry_allowed(snapshot, window_key: str) -> bool:
+    """Allow a few supervisor cycles to reconcile inside the current window."""
+    return snapshot.now_et < _window_start(snapshot, window_key) + timedelta(minutes=8)
+
+
+def _window_done(state: dict, session_date: str, window_key: str) -> bool:
+    scanned = state.get("scanned_windows") or {}
+    if window_key in (scanned.get(session_date) or []):
+        return True
+    # State written before multiple windows existed recorded only the date.
+    # Treat that as "this session is finished" so an upgrade mid-session cannot
+    # hand the lane a second set of entries it has already used.
+    return (
+        state.get("last_scan_date") == session_date
+        and session_date not in scanned
+    )
+
+
+def _mark_window_done(state: dict, session_date: str, window_key: str) -> None:
+    scanned = state.setdefault("scanned_windows", {})
+    done = scanned.setdefault(session_date, [])
+    if window_key not in done:
+        done.append(window_key)
+    # Keep only recent sessions so the state file cannot grow without bound.
+    for stale in sorted(scanned)[:-10]:
+        scanned.pop(stale, None)
+    state["last_scan_date"] = session_date
+
+
+def _write_decision(state: dict, snapshot, status: str, checks: list[dict],
+                    window: str | None = None, **payload) -> dict:
+    if window:
+        _mark_window_done(state, snapshot.session_date, window)
+    state["last_decision"] = {
+        "status": status, "at": snapshot.now_et.isoformat(),
+        "window": window, **payload,
+    }
     save_state(state)
-    return log("decision", status=status, checks=checks, session_date=snapshot.session_date, **payload)
+    return log("decision", status=status, checks=checks, window=window,
+               session_date=snapshot.session_date, **payload)
 
 
 def maybe_enter(snapshot) -> dict | None:
     """Run at most one broker-reconciled long-call entry decision per day."""
     if not config.OPTION_MR_ENABLED:
         return None
-    in_window, window_detail = _normal_entry_window(snapshot)
-    if not in_window:
+    window_key, window_detail = _normal_entry_window(snapshot)
+    if window_key is None:
         return None
     state = load_state()
-    if state.get("last_scan_date") == snapshot.session_date:
+    if _window_done(state, snapshot.session_date, window_key):
         return None
 
     active_records = {
@@ -736,7 +779,7 @@ def maybe_enter(snapshot) -> dict | None:
         _check("paper_account_identity", bool(config.ALPACA_ACCOUNT_ID) and
                snapshot.account_number == config.ALPACA_ACCOUNT_ID,
                f"MCP={snapshot.account_number or 'missing'} configured={config.ALPACA_ACCOUNT_ID or 'missing'}"),
-        _check("regular_1545_window", True, window_detail),
+        _check("regular_decision_window", True, window_detail),
         _check("account_active", snapshot.account_status == "ACTIVE" and not (
             snapshot.trading_blocked or snapshot.account_blocked or snapshot.trade_suspended_by_user
         ), f"status={snapshot.account_status}; blocked={snapshot.trading_blocked or snapshot.account_blocked or snapshot.trade_suspended_by_user}"),
@@ -762,9 +805,10 @@ def maybe_enter(snapshot) -> dict | None:
     if not all(check["passed"] for check in checks):
         # Give an option fill/close a few supervisor cycles to reconcile, but
         # make a final auditable decision near the end of the ten-minute window.
-        if _transient_retry_allowed(snapshot):
-            return {"strategy": "NDX30_CALL_MR_01", "status": "waiting", "checks": checks}
-        return _write_decision(state, snapshot, "VETOED", checks,
+        if _transient_retry_allowed(snapshot, window_key):
+            return {"strategy": "NDX30_CALL_MR_01", "status": "waiting",
+                    "window": window_key, "checks": checks}
+        return _write_decision(state, snapshot, "VETOED", checks, window=window_key,
                                reason="portfolio_or_broker_preflight")
 
     signals, errors = fetch_signals(config.OPTION_MR_UNIVERSE, snapshot.now_et)
@@ -774,12 +818,13 @@ def maybe_enter(snapshot) -> dict | None:
         f"{len(signals)}/{len(config.OPTION_MR_UNIVERSE)} symbols complete; errors={errors or 'none'}",
     ))
     if not data_ok:
-        if _transient_retry_allowed(snapshot):
+        if _transient_retry_allowed(snapshot, window_key):
             return {
                 "strategy": "NDX30_CALL_MR_01", "status": "waiting",
-                "reason": "sip_data_pending", "checks": checks,
+                "reason": "sip_data_pending", "window": window_key, "checks": checks,
             }
-        return _write_decision(state, snapshot, "VETOED", checks, reason="incomplete_sip_data")
+        return _write_decision(state, snapshot, "VETOED", checks, window=window_key,
+                               reason="incomplete_sip_data")
 
     held = {
         str(record.get("underlying") or "").upper()
@@ -793,7 +838,8 @@ def maybe_enter(snapshot) -> dict | None:
     ))
     if not ranked:
         return _write_decision(
-            state, snapshot, "NO_SIGNAL", checks, reason="no_qualified_mean_reversion",
+            state, snapshot, "NO_SIGNAL", checks, window=window_key,
+            reason="no_qualified_mean_reversion",
             scan={"symbols": len(signals), "raw_signals": signal_count},
         )
 
@@ -845,7 +891,7 @@ def maybe_enter(snapshot) -> dict | None:
 
         result = _open_one_call(
             state, snapshot, proposal, built, sized, list(checks), scan,
-            options_bp=options_bp,
+            options_bp=options_bp, window=window_key,
         )
         last_result = result
         entries.append({
@@ -863,23 +909,25 @@ def maybe_enter(snapshot) -> dict | None:
 
     if not entries:
         checks.append(_check("executable_long_call", False, f"none; {option_errors}"))
-        if _transient_retry_allowed(snapshot):
+        if _transient_retry_allowed(snapshot, window_key):
             return {
                 "strategy": "NDX30_CALL_MR_01", "status": "waiting",
-                "reason": "option_chain_pending", "checks": checks,
-                "option_errors": option_errors,
+                "reason": "option_chain_pending", "window": window_key,
+                "checks": checks, "option_errors": option_errors,
             }
         return _write_decision(
-            state, snapshot, "VETOED", checks, reason="no_executable_long_call",
-            scan=scan, option_errors=option_errors,
+            state, snapshot, "VETOED", checks, window=window_key,
+            reason="no_executable_long_call", scan=scan, option_errors=option_errors,
         )
 
-    state["last_scan_date"] = snapshot.session_date
+    _mark_window_done(state, snapshot.session_date, window_key)
     save_state(state)
-    log("window_summary", session_date=snapshot.session_date, entries=entries,
-        submitted=submitted_any, premium_budget_remaining=round(max(budget, 0.0), 2))
+    log("window_summary", session_date=snapshot.session_date, window=window_key,
+        entries=entries, submitted=submitted_any,
+        premium_budget_remaining=round(max(budget, 0.0), 2))
     return {
         **(last_result or {}),
+        "window": window_key,
         "status": "SUBMITTED" if submitted_any else (last_result or {}).get("status"),
         "entries": entries,
         "entries_allowed": entries_allowed,
@@ -898,7 +946,8 @@ def _refresh_options_buying_power(fallback: float) -> float:
 
 def _open_one_call(state: dict, snapshot, candidate: dict, contract: dict,
                    sizing: dict, checks: list[dict], scan: dict,
-                   options_bp: float | None = None) -> dict:
+                   options_bp: float | None = None,
+                   window: str | None = None) -> dict:
     """Gate, AI-review, and submit exactly one long call."""
     if options_bp is None:
         options_bp = snapshot.options_buying_power
@@ -944,7 +993,8 @@ def _open_one_call(state: dict, snapshot, candidate: dict, contract: dict,
     ])
     if not all(check["passed"] for check in checks):
         return {**_write_decision(state, snapshot, "VETOED", checks,
-                                  reason="deterministic_risk_gate", candidate=candidate),
+                                  reason="deterministic_risk_gate", candidate=candidate,
+                                  window=None, entry_window=window),
                 "premium_total": 0.0, "qty": 0}
 
     try:
@@ -958,7 +1008,8 @@ def _open_one_call(state: dict, snapshot, candidate: dict, contract: dict,
     ))
     if not news_ok:
         return {**_write_decision(state, snapshot, "VETOED", checks,
-                                  reason="news_context_unavailable", candidate=candidate),
+                                  reason="news_context_unavailable", candidate=candidate,
+                                  window=None, entry_window=window),
                 "premium_total": 0.0, "qty": 0}
 
     review, raw_reply = llm.review_option_mr_candidate(
@@ -976,7 +1027,7 @@ def _open_one_call(state: dict, snapshot, candidate: dict, contract: dict,
         return {**_write_decision(
             state, snapshot, "VETOED", checks, reason="ai_event_risk",
             candidate=candidate, contract=contract, qty=qty, stop_price=stop_price,
-            sizing=sizing, ai_review=review, scan=scan,
+            sizing=sizing, ai_review=review, scan=scan, entry_window=window,
             raw_reply_chars=len(raw_reply), news_count=news_count,
             earnings_calendar_verified=False,
         ), "premium_total": 0.0, "qty": 0}
@@ -1027,7 +1078,7 @@ def _open_one_call(state: dict, snapshot, candidate: dict, contract: dict,
         state, snapshot, "SUBMITTED" if submitted else "VETOED", checks,
         reason="approved" if submitted else "broker_reconciliation_failed",
         candidate=candidate, contract=contract, qty=qty, stop_price=stop_price,
-        sizing=sizing, ai_review=review, scan=scan,
+        sizing=sizing, ai_review=review, scan=scan, entry_window=window,
         news_count=news_count, raw_reply_chars=len(raw_reply),
         earnings_calendar_verified=False,
         execution={
@@ -1187,10 +1238,11 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
                     underlying=record.get("underlying"), broker_status=broker_status,
                 ))
 
+    exit_hour, exit_minute = config.OPTION_MR_EXIT_CHECK_WINDOW
     normal_window = (
         bool(clock.get("is_open"))
-        and now_et.hour == 15
-        and config.OPTION_MR_DECISION_MINUTE <= now_et.minute <= config.OPTION_MR_DECISION_MINUTE + 10
+        and now_et.hour == exit_hour
+        and exit_minute <= now_et.minute <= exit_minute + 10
     )
 
     open_records = {

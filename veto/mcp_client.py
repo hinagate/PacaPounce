@@ -284,8 +284,9 @@ def _sort_time_series(value: Any) -> Any:
 
 
 async def call_many_time_windows(
-    calls: list[tuple[str, dict]], *, window_days: float = 14,
-    min_window_seconds: float = 60, concurrency: int = 24,
+    calls: list[tuple[str, dict] | tuple[str, dict, float]], *,
+    window_days: float = 14, min_window_seconds: float = 60,
+    concurrency: int = 24,
 ) -> list[Any]:
     """Fetch complete historical MCP data without relying on page_token.
 

@@ -222,6 +222,44 @@ OPTION_MR_PROFIT_EXIT_ENABLED = os.getenv(
 OPTION_MR_DECISION_MINUTE = int(
     os.getenv("PACAPOUNCE_OPTION_MR_DECISION_MINUTE", "45")
 )
+
+
+def _decision_windows(raw: str) -> tuple[tuple[int, int], ...]:
+    """Parse "HH:MM,HH:MM" into sorted, validated regular-session windows."""
+    parsed = set()
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            hour, minute = (int(part) for part in chunk.split(":", 1))
+        except ValueError as exc:
+            raise ValueError(f"invalid option-MR decision window {chunk!r}") from exc
+        if not (0 <= minute < 60) or not (9, 30) <= (hour, minute) <= (15, 45):
+            raise ValueError(
+                f"option-MR decision window {chunk!r} must be between "
+                "09:30 and 15:45 ET, leaving room for the ten-minute window"
+            )
+        parsed.add((hour, minute))
+    if not parsed:
+        raise ValueError("at least one option-MR decision window is required")
+    return tuple(sorted(parsed))
+
+
+# Each window is ten minutes long. A single 15:45 scan sees only the completed
+# 15:30 bar, so a name that is oversold in the morning and recovers by the close
+# is never seen, and a session without a 15:30 signal deploys nothing at all.
+# Measured over 120 sessions, 27.5% of sessions produce no candidate and misses
+# cluster hard: P(miss | yesterday missed) is 53% against 17% otherwise, with a
+# nine-session drought in sample. More windows is the direct answer to that.
+OPTION_MR_DECISION_WINDOWS = _decision_windows(
+    os.getenv(
+        "PACAPOUNCE_OPTION_MR_DECISION_WINDOWS",
+        f"15:{OPTION_MR_DECISION_MINUTE:02d}",
+    )
+)
+# The monitor's once-daily exit check runs in the last window of the session.
+OPTION_MR_EXIT_CHECK_WINDOW = OPTION_MR_DECISION_WINDOWS[-1]
 # ── Two-lane capital budget ─────────────────────────────────────────────────
 # Each lane gets a share of EQUITY, not of whatever buying power happens to be
 # left. Sizing off remaining BP made the second lane's allocation depend on the

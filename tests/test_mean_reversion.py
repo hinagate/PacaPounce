@@ -4,6 +4,8 @@ from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from veto import config, mean_reversion as mr
 
 ET = ZoneInfo("America/New_York")
@@ -728,3 +730,83 @@ def test_window_stops_at_the_portfolio_premium_budget(tmp_path, monkeypatch):
     assert len(result["entries"]) == 1
     total = sum(r["max_premium"] for r in mr.load_state()["positions"].values())
     assert total <= 10_000.0
+
+
+def test_decision_windows_parse_and_reject_times_outside_the_session():
+    from veto.config import _decision_windows
+
+    assert _decision_windows("15:45") == ((15, 45),)
+    assert _decision_windows("15:45,10:00") == ((10, 0), (15, 45))
+    assert _decision_windows(" 10:00 , 10:00 ") == ((10, 0),)
+
+    for bad in ("09:00", "16:00", "15:46", "nope", "10:99", ""):
+        with pytest.raises(ValueError):
+            _decision_windows(bad)
+
+
+def test_each_window_opens_once_and_only_inside_its_ten_minutes(monkeypatch):
+    monkeypatch.setattr(mr.config, "OPTION_MR_DECISION_WINDOWS", ((10, 0), (15, 45)))
+    day = datetime(2026, 8, 31, tzinfo=ET)
+
+    def at(hour, minute):
+        return _snapshot(day.replace(hour=hour, minute=minute))
+
+    assert mr._normal_entry_window(at(10, 0))[0] == "10:00"
+    assert mr._normal_entry_window(at(10, 9))[0] == "10:00"
+    assert mr._normal_entry_window(at(15, 45))[0] == "15:45"
+    assert mr._normal_entry_window(at(15, 55))[0] == "15:45"
+    # Between and outside the windows nothing is open.
+    for hour, minute in ((9, 45), (10, 11), (12, 0), (15, 44), (15, 56)):
+        key, detail = mr._normal_entry_window(at(hour, minute))
+        assert key is None, f"{hour:02d}:{minute:02d} should be closed"
+        assert "10:00, 15:45" in detail
+
+
+def test_a_scanned_window_does_not_rescan_but_the_later_one_still_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr(mr.config, "OPTION_MR_STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(mr.config, "OPTION_MR_DECISION_WINDOWS", ((10, 0), (15, 45)))
+    state, day = mr.load_state(), "2026-08-31"
+
+    assert not mr._window_done(state, day, "10:00")
+    mr._mark_window_done(state, day, "10:00")
+
+    # The morning window is finished; the afternoon one is still available.
+    assert mr._window_done(state, day, "10:00")
+    assert not mr._window_done(state, day, "15:45")
+    # And tomorrow starts clean.
+    assert not mr._window_done(state, "2026-09-01", "10:00")
+
+    mr._mark_window_done(state, day, "15:45")
+    assert mr._window_done(state, day, "15:45")
+    assert state["scanned_windows"][day] == ["10:00", "15:45"]
+
+
+def test_state_written_before_multiple_windows_existed_closes_the_session(tmp_path, monkeypatch):
+    """Upgrading mid-session must not hand the lane a second set of entries it
+    has already spent under the old single-window schedule."""
+    monkeypatch.setattr(mr.config, "OPTION_MR_STATE_FILE", tmp_path / "state.json")
+    legacy = {"last_scan_date": "2026-08-31"}
+
+    assert mr._window_done(legacy, "2026-08-31", "10:00")
+    assert mr._window_done(legacy, "2026-08-31", "15:45")
+    assert not mr._window_done(legacy, "2026-09-01", "10:00")
+
+
+def test_scanned_window_history_is_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(mr.config, "OPTION_MR_STATE_FILE", tmp_path / "state.json")
+    state = {}
+    for n in range(1, 26):
+        mr._mark_window_done(state, f"2026-09-{n:02d}", "10:00")
+    assert len(state["scanned_windows"]) <= 10
+    assert "2026-09-25" in state["scanned_windows"]
+
+
+def test_transient_retry_is_measured_from_the_open_window(monkeypatch):
+    monkeypatch.setattr(mr.config, "OPTION_MR_DECISION_WINDOWS", ((10, 0), (15, 45)))
+    day = datetime(2026, 8, 31, tzinfo=ET)
+
+    # Seven minutes into the morning window there is still time to reconcile.
+    assert mr._transient_retry_allowed(_snapshot(day.replace(hour=10, minute=7)), "10:00")
+    assert not mr._transient_retry_allowed(_snapshot(day.replace(hour=10, minute=9)), "10:00")
+    # The afternoon window gets its own clock, not the morning one's.
+    assert mr._transient_retry_allowed(_snapshot(day.replace(hour=15, minute=50)), "15:45")

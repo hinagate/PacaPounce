@@ -24,7 +24,7 @@ gate. A live OPRA monitor then reconciles Alpaca positions every 30 seconds and
 manages fills and deterministic exits. The 8%-annual objective remains a visible
 benchmark rather than a tournament stop. Every proposal, veto, order, fill, and
 P&L result is auditable, and MCP tool usage is counted. A second Paper-Staging
-options lane scans 30 liquid Nasdaq underlyings once at 15:45 ET for a long-trend
+options lane scans 14 liquid Nasdaq underlyings at 10:00 and 15:45 ET for a long-trend
 RSI(2) mean-reversion setup, then expresses the strongest signal as a 14–30 DTE
 long call near 0.70 delta. Python chooses the contract, computes its size and
 manages its exit; LLM reviews timestamped Alpaca news for event risk and writes
@@ -72,7 +72,7 @@ flowchart LR
     H --> J[30-second OPRA monitor]
     J --> K[Profit, loss, pin-risk, and daily-target exits]
     K -->|Alpaca is source of truth| L[P&L + dashboard + audit trail]
-    S -->|15:45, reserve available| M[NDX30 SIP mean-reversion scan]
+    S -->|10:00 / 15:45 window| M[NDX30 SIP mean-reversion scan]
     M --> N[Alpaca get_news + one AI event review]
     N --> O[Live chain + deterministic long-call builder]
     O --> P[Paper buy-to-open limit]
@@ -86,10 +86,10 @@ above a rising SMA200 plus Wilder RSI(2) below 10, ranked once per normal sessio
 For each approved underlying, Python selects a 14–30 DTE call, rejects delta
 outside 0.55–0.85 or relative bid/ask above 6%, and sizes it from the active
 objective — a 0.5%-equity ATR risk budget by default, or the premium budget in
-tournament mode. One 15:45 window may open several positions, and each gets its
+tournament mode. One window may open several positions, and each gets its
 own news pull and its own AI event-risk review, so a portfolio of entries is a
 portfolio of separate AI decisions. The monitor closes at the underlying 2×ATR
-stop, an EMA5 recovery at 15:45, or the holding-session limit. The LLM never
+stop, an EMA5 recovery at the last window, or the holding-session limit. The LLM never
 selects the contract, quantity, or exit.
 
 **We measured this lane's option-level return and did not like the answer.** The
@@ -383,7 +383,7 @@ ledger records decisions, but it is never treated as the P&L source of truth.
 | Market context | SIP spot plus completed daily bars and nearest-ATM option snapshots produce timestamped 1D/5D returns, RV20, ATM IV, and IV/RV; cached for five minutes, with unavailable VIX/IV rank never fabricated | `veto/regime.py`, `run.py` |
 | Contract discovery | Option chains, Greeks, IV, bid/ask, timestamps | `veto/builder.py` |
 | Historical context | Completed daily stock bars for model-grounding returns and realized-volatility estimation | `veto/regime.py`, `veto/builder.py` |
-| Second Paper signal | One 15:45 ET normal-session scan of adjusted SIP daily + completed 15-minute bars; Python computes SMA200, Wilder RSI(2), EMA5, ATR14, issuer deduplication and ranking | `veto/mean_reversion.py` |
+| Second Paper signal | Normal-session scans at each configured window (10:00, 15:45 ET) of adjusted SIP daily + completed 15-minute bars; Python computes SMA200, Wilder RSI(2), EMA5, ATR14, issuer deduplication and ranking | `veto/mean_reversion.py` |
 | Auditable AI news review | `get_news` supplies timestamped context for the top numeric candidate; LLM can veto concrete event risk and write a thesis, but the UI explicitly does not call this a verified earnings calendar | `veto/mean_reversion.py`, `veto/llm.py`, `scripts/build_dashboard.py` |
 | Options-only MR construction | `get_option_chain` selects a 14–30 DTE call nearest 0.70 delta; freshness, delta, and relative-spread filters are deterministic | `veto/mean_reversion.py` |
 | Reconciled long-call execution | `place_option_order` sends `buy_to_open`/`sell_to_close` limit orders; `get_orders` client-ID and Alpaca order-ID reconciliation is required before SUBMITTED | `veto/mean_reversion.py`, `scripts/monitor.py` |
