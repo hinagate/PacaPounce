@@ -202,3 +202,61 @@ def test_exit_record_captures_prior_gate_quality(tmp_path, monkeypatch):
     assert recorded["ratchet_high_water_pnl"] == 40.0
     assert recorded["ratchet_trailing_floor_pnl"] == 32.0
     assert recorded["ratchet_breach_count"] == 2
+
+
+def test_reentry_budget_allows_more_than_one_same_day_attempt(tmp_path, monkeypatch):
+    """One profitable close should not end entry hunting while capital is free.
+
+    Every re-entry still has to clear the cooldown, the calm-market reset, and
+    the full gate stack; only the arbitrary one-per-day ceiling is lifted.
+    """
+    monkeypatch.setattr(config, "REENTRY_MAX_PER_DAY", 3)
+    path = tmp_path / "risk.json"
+    now = datetime(2026, 8, 26, 10, 0, tzinfo=ET)
+    state = risk_state._blank()
+    state["last_exit"] = {
+        "submitted_at": now.isoformat(),
+        "cooldown_until": now.isoformat(),
+        "action": "profit_target",
+        "eligible": True,
+        "reentry_count": 0,
+        "entry_baseline": {"quality": 0.02},
+        "post_exit_market_ready": True,
+    }
+    risk_state.save(state, path)
+
+    later = now + timedelta(minutes=31)
+    for expected in range(3):
+        status = risk_state.reentry_status(later, path)
+        assert status["allowed"], f"re-entry {expected + 1} should be permitted"
+        risk_state.mark_reentry_submission(
+            SPREAD, {"ev_net_usd": 20.0, "max_loss_usd": 500.0},
+            {"client_order_id": f"veto-open-{expected}"}, path,
+        )
+
+    exhausted = risk_state.reentry_status(later, path)
+    assert not exhausted["allowed"]
+    assert exhausted["reason"] == "reentry_already_used"
+    assert "3/3" in exhausted["detail"]
+
+
+def test_legacy_consumed_flag_still_counts_as_one_reentry(tmp_path, monkeypatch):
+    """A restart must not hand back a re-entry that older state already used."""
+    monkeypatch.setattr(config, "REENTRY_MAX_PER_DAY", 1)
+    path = tmp_path / "risk.json"
+    now = datetime(2026, 8, 26, 10, 0, tzinfo=ET)
+    state = risk_state._blank()
+    state["last_exit"] = {
+        "submitted_at": now.isoformat(),
+        "cooldown_until": now.isoformat(),
+        "action": "profit_target",
+        "eligible": True,
+        "reentry_consumed": True,
+        "entry_baseline": {"quality": 0.02},
+        "post_exit_market_ready": True,
+    }
+    risk_state.save(state, path)
+
+    status = risk_state.reentry_status(now + timedelta(minutes=31), path)
+    assert not status["allowed"]
+    assert status["reason"] == "reentry_already_used"

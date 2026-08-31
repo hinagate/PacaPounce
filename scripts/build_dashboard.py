@@ -407,7 +407,7 @@ def load_tools() -> dict:
 
 
 def load_mr_validation() -> dict:
-    path = ROOT / "data" / "ndx30_mr_validation.json"
+    path = ROOT / "data" / "ndx30_option_mr_validation.json"
     try:
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     except Exception:
@@ -632,7 +632,7 @@ def build(live: bool = True, output: Path | None = None) -> Path:
     ]
     mr_latest = mr_decisions[-1] if mr_decisions else None
     mr_validation = load_mr_validation()
-    mr_oos = mr_validation.get("oos_2024") or {}
+    mr_oos = mr_validation.get("underlying_signal_oos_2024") or {}
     built_at = datetime.now(ZoneInfo("America/New_York")).isoformat(timespec="seconds")
     audit_rel = config.VERDICT_LOG.relative_to(ROOT).as_posix()
     audit_href = "../" + audit_rel
@@ -770,10 +770,12 @@ def build(live: bool = True, output: Path | None = None) -> Path:
             str((row.get("ai_review") or {}).get("thesis") or "").strip()
             or str(row.get("reason") or "deterministic scan completed")
         )
+        contract = row.get("contract") or {}
         candidate_text = (
-            f"{candidate.get('symbol')} stock mean reversion · RSI(2) "
-            f"{float(candidate.get('rsi2') or 0):.2f}"
-            if candidate else "NDX30 stock mean-reversion scan"
+            f"{candidate.get('symbol')} long call · RSI(2) "
+            f"{float(candidate.get('rsi2') or 0):.2f} · "
+            f"{contract.get('dte', '-')} DTE"
+            if candidate else "NDX30 options mean-reversion scan"
         )
         decision_rows_html = (
             f"<tr><td>{overview_time(row.get('ts'))} ET</td>"
@@ -794,48 +796,30 @@ def build(live: bool = True, output: Path | None = None) -> Path:
         (mr_latest or {}).get("reason")
         or "awaiting the next 15:45 ET regular-session scan"
     )
-    mr_starting_equity = 100_000.0
-    mr_incremental_pnl = float(mr_oos.get("net_pnl_usd_on_100k") or 0)
-    mr_after_equity = mr_starting_equity + mr_incremental_pnl
-    mr_return_pct = float(mr_oos.get("return_pct") or 0)
-    mr_screen_2023 = mr_validation.get("screen_2023") or {}
     second_strategy_block = f"""
-<h3 style="font-size:14px;margin:24px 0 8px">Second Paper strategy · NDX30_MR_01</h3>
+<h3 style="font-size:14px;margin:24px 0 8px">Second options strategy · NDX30_CALL_MR_01</h3>
 <div class="tiles">
   <div class="tile"><div class="k">Staging status</div><div class="v" style="font-size:18px">{html_lib.escape(mr_latest_status)}</div>
     <div class="f">{html_lib.escape(mr_latest_reason)}</div></div>
-  <div class="tile"><div class="k">Managed stock positions</div><div class="v">{len(mr_managed)}</div>
-    <div class="f">maximum {config.STOCK_MR_MAX_POSITIONS}; one new entry/day</div></div>
-  <div class="tile"><div class="k">2024 SIP OOS</div><div class="v pos">PF {float(mr_oos.get('profit_factor') or 0):.3f}</div>
-    <div class="f">{int(mr_oos.get('trades') or 0)} trades · Sharpe {float(mr_oos.get('sharpe') or 0):.3f} · max DD {float(mr_oos.get('max_drawdown_pct') or 0):.2f}%</div></div>
-  <div class="tile"><div class="k">Frozen signal</div><div class="v" style="font-size:18px">RSI(2) &lt; {config.STOCK_MR_RSI_MAX:g}</div>
+  <div class="tile"><div class="k">Managed long calls</div><div class="v">{len(mr_managed)}</div>
+    <div class="f">maximum {config.OPTION_MR_MAX_POSITIONS}; one new entry/day</div></div>
+  <div class="tile"><div class="k">Underlying signal OOS</div><div class="v pos">PF {float(mr_oos.get('profit_factor') or 0):.3f}</div>
+    <div class="f">{int(mr_oos.get('trades') or 0)} stock-signal trades · not option P&amp;L</div></div>
+  <div class="tile"><div class="k">Options contract</div><div class="v" style="font-size:18px">{config.OPTION_MR_DTE_MIN}-{config.OPTION_MR_DTE_MAX} DTE call</div>
+    <div class="f">target delta {config.OPTION_MR_DELTA_TARGET:.2f} · bid/ask cap {config.OPTION_MR_MAX_SPREAD_PCT:.0%}</div></div>
+  <div class="tile"><div class="k">Frozen signal</div><div class="v" style="font-size:18px">RSI(2) &lt; {config.OPTION_MR_RSI_MAX:g}</div>
     <div class="f">price &gt; rising SMA200 · scan 15:45 ET</div></div>
 </div>
-<h3 style="font-size:13px;margin:18px 0 8px">Before / after · same historical fallback capital</h3>
-<div class="simple-table"><table><thead><tr><th>Comparison</th><th>Starting equity</th>
-<th>Ending equity</th><th>Incremental P&amp;L</th><th>Result</th></tr></thead><tbody>
-<tr><td>Before · strategy 2 absent</td><td>{money(mr_starting_equity)}</td>
-<td>{money(mr_starting_equity)}</td><td>$0.00</td><td>Fallback allocation remains idle</td></tr>
-<tr><td>After · NDX30_MR_01 (2024 OOS)</td><td>{money(mr_starting_equity)}</td>
-<td>{money(mr_after_equity)}</td><td class="pos">{money(mr_incremental_pnl)} ({mr_return_pct:+.3f}%)</td>
-<td>{int(mr_oos.get('wins') or 0)}/{int(mr_oos.get('trades') or 0)} wins · max DD {float(mr_oos.get('max_drawdown_pct') or 0):.2f}%</td></tr>
-<tr><td>Earlier screen · 2023</td><td>{money(mr_starting_equity)}</td>
-<td>{money(mr_starting_equity * (1 + float(mr_screen_2023.get('return_pct') or 0) / 100))}</td>
-<td class="pos">+{float(mr_screen_2023.get('return_pct') or 0):.2f}%</td>
-<td>Positive, but PF {float(mr_screen_2023.get('profit_factor') or 0):.3f} / Sharpe {float(mr_screen_2023.get('sharpe') or 0):.3f} failed the strict card</td></tr>
-</tbody></table></div>
-<div class="note"><b>Paper Staging, not production proof.</b> Python scans {len(config.STOCK_MR_UNIVERSE)}
-liquid Nasdaq names, sizes {config.STOCK_MR_EQUITY_RISK_PCT:.1%} equity risk with a
-{config.STOCK_MR_STOP_ATR_MULTIPLE:g}×ATR14 broker stop, and exits above EMA5 or after
-{config.STOCK_MR_MAX_HOLD_SESSIONS} regular sessions. The AI reviews only timestamped
-<code>get_news</code> context and writes the thesis. <b>Earnings calendar independently
-verified: no.</b> News search is not presented as a deterministic earnings gate.</div>"""
-    second_strategy_block += """
-<div class="note warn"><b>Comparison boundary.</b> “Before” means the same fallback
-allocation stays idle; it is not a reconstructed options-strategy return. The stock
-OOS result is not simply added to options P&amp;L because the live orchestrator blocks
-stock entry whenever an option spread or opening order has reserved capital. Exact
-combined performance requires a synchronized historical option + stock event replay.</div>"""
+<div class="note"><b>Options-only execution.</b> Python scans {len(config.OPTION_MR_UNIVERSE)}
+liquid Nasdaq underlyings, resolves one real OCC long call from Alpaca, sizes
+to a {config.OPTION_MR_EQUITY_RISK_PCT:.1%} modeled-risk target (one-contract
+ceiling {config.OPTION_MR_ONE_CONTRACT_RISK_CAP_PCT:.0%}) under a
+{config.OPTION_MR_MAX_PREMIUM_PCT:.0%} premium cap, and submits only
+<code>place_option_order</code> limit orders. No stock order exists in the strategy.</div>
+<div class="note warn"><b>Evidence boundary.</b> The 2024 +{float(mr_oos.get('return_pct') or 0):.2f}%
+and PF {float(mr_oos.get('profit_factor') or 0):.3f} validate the underlying timing signal,
+not historical option returns. IV, theta and option bid/ask effects require forward Paper
+evidence and are never mixed into competition P&amp;L.</div>"""
 
     # --- Charts (proposal-style: more graph, less prose) ---------------------
     funnel_chart = funnel_svg(presentation)
@@ -1069,14 +1053,15 @@ permission from Alpaca. No daily trade counter or pending-order lock lives only 
     <span class="layer">MCP + AI</span></div><p><code>get_news</code> supplies timestamped articles
     for the selected numerical candidate. Poe may veto concrete event risk and write the thesis.
     The feed is not mislabeled as a verified earnings calendar.</p></div>
-  <div class="gate-card"><div class="top"><span class="seq">S3</span><h3>Broker-native protection</h3>
-    <span class="layer">MCP</span></div><p><code>place_stock_order</code> submits a Paper OTO with
-    a 2×ATR14 stop. <code>get_orders</code> must return the same client ID and an Alpaca order ID
-    before the dashboard records SUBMITTED.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">S3</span><h3>Exact long-call execution</h3>
+    <span class="layer">MCP</span></div><p><code>get_option_chain</code> resolves a liquid
+    {config.OPTION_MR_DTE_MIN}-{config.OPTION_MR_DTE_MAX} DTE call near
+    {config.OPTION_MR_DELTA_TARGET:.2f} delta. <code>place_option_order</code> submits a
+    buy-to-open limit; <code>get_orders</code> must confirm it before SUBMITTED.</p></div>
   <div class="gate-card"><div class="top"><span class="seq">S4</span><h3>Deterministic lifecycle</h3>
     <span class="layer">MCP + POLICY</span></div><p>The 30-second monitor reconciles broker
-    positions and stops, cancels the protective child before an EMA5/time exit, and uses
-    <code>get_calendar</code> to count regular holding sessions. The LLM never times exits.</p></div>
+    option positions, checks the underlying 2×ATR14 stop, and sends a sell-to-close
+    limit on stop, EMA5 recovery, or session three. The LLM never times exits.</p></div>
 </div>
 <div class="note"><b>Every Alpaca interaction goes through MCP.</b>
 <code>get_option_chain</code> and <code>get_option_snapshot</code> supply strikes, real bid/ask

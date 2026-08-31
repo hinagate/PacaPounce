@@ -133,52 +133,147 @@ REENTRY_MIN_QUALITY_MULTIPLIER = float(
 REENTRY_BP_UTILIZATION = float(os.getenv("PACAPOUNCE_REENTRY_BP_UTILIZATION", "1.0"))
 if not 0 < REENTRY_BP_UTILIZATION <= 1:
     raise ValueError("PACAPOUNCE_REENTRY_BP_UTILIZATION must be in (0, 1]")
+# How many same-day re-entries one profitable exit may earn. Each still has to
+# clear the cooldown, the market-reset window, and every gate including the
+# economic one; this only stops a single profitable close from ending the
+# session's entry hunting when capital is free and the setup is still good.
+REENTRY_MAX_PER_DAY = int(os.getenv("PACAPOUNCE_REENTRY_MAX_PER_DAY", "1"))
+if REENTRY_MAX_PER_DAY < 1:
+    raise ValueError("PACAPOUNCE_REENTRY_MAX_PER_DAY must be at least 1")
 
-# ── Second Paper strategy: NDX30 mean reversion ─────────────────────────────
-# This is deliberately a small, frozen policy rather than another free-form AI
-# strategy.  It passed the 2024 SIP OOS staging card (146 trades, PF 1.394,
-# Sharpe 1.353, max drawdown 1.82%).  It remains PAPER staging, not a promise of
-# production alpha.  Python owns every numeric decision; Poe may only veto a
-# candidate for concrete event/news risk and write the human-readable thesis.
-STOCK_MR_ENABLED = os.getenv("PACAPOUNCE_STOCK_MR_ENABLED", "true").lower() in {
+# ── Second options strategy: NDX30 long-call mean reversion ─────────────────
+# The underlying signal passed the 2024 SIP OOS staging card.  Competition
+# execution is options-only: Python resolves one liquid 14-30 DTE long call,
+# sizes its premium and monitors its deterministic exit.  The stock result is a
+# signal proxy, not an options P&L claim.
+OPTION_MR_ENABLED = os.getenv("PACAPOUNCE_OPTION_MR_ENABLED", "true").lower() in {
     "1", "true", "yes", "on",
 }
-STOCK_MR_UNIVERSE = [
+OPTION_MR_UNIVERSE = [
     symbol.strip().upper()
     for symbol in os.getenv(
-        "PACAPOUNCE_STOCK_MR_UNIVERSE",
+        "PACAPOUNCE_OPTION_MR_UNIVERSE",
         "AAPL,MSFT,AMZN,GOOGL,GOOG,NVDA,TSLA,META,PEP,AVGO,COST,CSCO,TMUS,"
         "ADBE,TXN,CMCSA,AMD,HON,AMGN,QCOM,NFLX,INTU,SBUX,GILD,ADP,BKNG,ISRG,"
         "MDLZ,PYPL,INTC",
     ).split(",")
     if symbol.strip()
 ]
-STOCK_MR_RSI_MAX = float(os.getenv("PACAPOUNCE_STOCK_MR_RSI_MAX", "10"))
-STOCK_MR_EQUITY_RISK_PCT = float(
-    os.getenv("PACAPOUNCE_STOCK_MR_EQUITY_RISK_PCT", "0.005")
+OPTION_MR_RSI_MAX = float(os.getenv("PACAPOUNCE_OPTION_MR_RSI_MAX", "10"))
+OPTION_MR_EQUITY_RISK_PCT = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_EQUITY_RISK_PCT", "0.005")
 )
-STOCK_MR_MAX_NOTIONAL_PCT = float(
-    os.getenv("PACAPOUNCE_STOCK_MR_MAX_NOTIONAL_PCT", "0.20")
+OPTION_MR_ONE_CONTRACT_RISK_CAP_PCT = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_ONE_CONTRACT_RISK_CAP_PCT", "0.02")
 )
-STOCK_MR_STOP_ATR_MULTIPLE = float(
-    os.getenv("PACAPOUNCE_STOCK_MR_STOP_ATR_MULTIPLE", "2.0")
+# Premium ceiling for ONE long-call position, as a share of equity.
+OPTION_MR_MAX_PREMIUM_PCT = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_MAX_PREMIUM_PCT", "0.20")
 )
-STOCK_MR_MAX_POSITIONS = int(os.getenv("PACAPOUNCE_STOCK_MR_MAX_POSITIONS", "3"))
-STOCK_MR_MAX_ENTRIES_PER_DAY = int(
-    os.getenv("PACAPOUNCE_STOCK_MR_MAX_ENTRIES_PER_DAY", "1")
+OPTION_MR_STOP_ATR_MULTIPLE = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_STOP_ATR_MULTIPLE", "2.0")
 )
-STOCK_MR_MAX_HOLD_SESSIONS = int(
-    os.getenv("PACAPOUNCE_STOCK_MR_MAX_HOLD_SESSIONS", "3")
+OPTION_MR_DTE_MIN = int(os.getenv("PACAPOUNCE_OPTION_MR_DTE_MIN", "14"))
+OPTION_MR_DTE_MAX = int(os.getenv("PACAPOUNCE_OPTION_MR_DTE_MAX", "30"))
+OPTION_MR_DELTA_TARGET = float(os.getenv("PACAPOUNCE_OPTION_MR_DELTA_TARGET", "0.70"))
+OPTION_MR_DELTA_MIN = float(os.getenv("PACAPOUNCE_OPTION_MR_DELTA_MIN", "0.55"))
+OPTION_MR_DELTA_MAX = float(os.getenv("PACAPOUNCE_OPTION_MR_DELTA_MAX", "0.85"))
+OPTION_MR_MAX_SPREAD_PCT = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_MAX_SPREAD_PCT", "0.06")
 )
-STOCK_MR_DECISION_MINUTE = int(
-    os.getenv("PACAPOUNCE_STOCK_MR_DECISION_MINUTE", "45")
+# Mean underlying move per signal trade, measured on the frozen 2026 YTD scan
+# (108 trades, mean +0.795%, median +0.789%). This is what a long call has to
+# be bought cheaply enough to monetise: it is the measured edge, not a target.
+OPTION_MR_SIGNAL_EDGE_PCT = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_SIGNAL_EDGE_PCT", "0.00795")
 )
-if not 0 < STOCK_MR_EQUITY_RISK_PCT <= 0.02:
-    raise ValueError("PACAPOUNCE_STOCK_MR_EQUITY_RISK_PCT must be in (0, 0.02]")
-if not 0 < STOCK_MR_MAX_NOTIONAL_PCT <= 1:
-    raise ValueError("PACAPOUNCE_STOCK_MR_MAX_NOTIONAL_PCT must be in (0, 1]")
-if STOCK_MR_MAX_POSITIONS < 1 or STOCK_MR_MAX_ENTRIES_PER_DAY != 1:
-    raise ValueError("stock MR requires >=1 positions and exactly one entry per day")
+if not 0 < OPTION_MR_SIGNAL_EDGE_PCT < 1:
+    raise ValueError("PACAPOUNCE_OPTION_MR_SIGNAL_EDGE_PCT must be in (0, 1)")
+# How many times the measured edge a contract's carry may cost before it is
+# rejected. At 1.0 the lane only buys calls the signal can actually pay for -
+# the expected-value reading. Tournament mode loosens this deliberately: the
+# objective there is upper-tail, not expected value, so the gate's job narrows
+# to throwing out the genuinely unpayable contracts rather than proving edge.
+# Selection still ranks by cheapest carry, so a looser ceiling never makes the
+# chosen contract worse - it only enlarges the pool when the tight one is empty.
+OPTION_MR_CARRY_EDGE_MULTIPLE = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_CARRY_EDGE_MULTIPLE", "1.0")
+)
+if OPTION_MR_CARRY_EDGE_MULTIPLE < 1.0:
+    raise ValueError("PACAPOUNCE_OPTION_MR_CARRY_EDGE_MULTIPLE must be at least 1.0")
+OPTION_MR_CARRY_CEILING_PCT = OPTION_MR_SIGNAL_EDGE_PCT * OPTION_MR_CARRY_EDGE_MULTIPLE
+OPTION_MR_MAX_POSITIONS = int(os.getenv("PACAPOUNCE_OPTION_MR_MAX_POSITIONS", "3"))
+OPTION_MR_MAX_ENTRIES_PER_DAY = int(
+    os.getenv("PACAPOUNCE_OPTION_MR_MAX_ENTRIES_PER_DAY", "1")
+)
+OPTION_MR_MAX_HOLD_SESSIONS = int(
+    os.getenv("PACAPOUNCE_OPTION_MR_MAX_HOLD_SESSIONS", "3")
+)
+# The EMA5 recovery exit is the strategy's profit-taking rule: once the bounce
+# arrives, the mean-reversion thesis is spent and it closes. Under the
+# upper-tail objective that rule is the binding cap on the payoff the lane
+# exists to buy - it typically closes on session two for a small gain and gives
+# up the rest of the window. Disabling it keeps the 2xATR stop and the
+# holding-session limit, so downside protection is unchanged; only the
+# profit-taking is removed.
+OPTION_MR_PROFIT_EXIT_ENABLED = os.getenv(
+    "PACAPOUNCE_OPTION_MR_PROFIT_EXIT_ENABLED", "true"
+).lower() in {"1", "true", "yes", "on"}
+OPTION_MR_DECISION_MINUTE = int(
+    os.getenv("PACAPOUNCE_OPTION_MR_DECISION_MINUTE", "45")
+)
+# ── Two-lane capital budget ─────────────────────────────────────────────────
+# Each lane gets a share of EQUITY, not of whatever buying power happens to be
+# left. Sizing off remaining BP made the second lane's allocation depend on the
+# order the two lanes happened to fill in, and starved whichever went second.
+# Live options buying power still bounds both: these are ceilings, not grants.
+SPREAD_EQUITY_PCT = float(os.getenv("PACAPOUNCE_SPREAD_EQUITY_PCT", "0.95"))
+if not 0 < SPREAD_EQUITY_PCT <= 1:
+    raise ValueError("PACAPOUNCE_SPREAD_EQUITY_PCT must be in (0, 1]")
+# Total premium the long-call lane may hold open across all its positions.
+OPTION_MR_TOTAL_PREMIUM_PCT = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_TOTAL_PREMIUM_PCT", "0.05")
+)
+if not 0 < OPTION_MR_TOTAL_PREMIUM_PCT <= 1:
+    raise ValueError("PACAPOUNCE_OPTION_MR_TOTAL_PREMIUM_PCT must be in (0, 1]")
+
+# Long-call sizing objective.
+#   risk_budget - size from the 2xATR modeled stop (the validated risk model)
+#   tournament  - size from the premium budget directly, because a leaderboard
+#                 rewards the upper tail rather than expected value. This is an
+#                 explicit objective change and is disclosed as one; it does not
+#                 pretend a 17%-of-equity position is a 0.5% risk budget.
+OPTION_MR_SIZING_MODE = os.getenv(
+    "PACAPOUNCE_OPTION_MR_SIZING_MODE", "risk_budget"
+).strip().lower()
+if OPTION_MR_SIZING_MODE not in {"risk_budget", "tournament"}:
+    raise ValueError(
+        "PACAPOUNCE_OPTION_MR_SIZING_MODE must be risk_budget or tournament"
+    )
+OPTION_MR_TOURNAMENT = OPTION_MR_SIZING_MODE == "tournament"
+if not 0 < OPTION_MR_EQUITY_RISK_PCT <= 0.02:
+    raise ValueError("PACAPOUNCE_OPTION_MR_EQUITY_RISK_PCT must be in (0, 0.02]")
+# In tournament mode the modeled-stop risk budget is not the sizing input, so
+# the premium budgets below are the only thing bounding a position.
+if not OPTION_MR_EQUITY_RISK_PCT <= OPTION_MR_ONE_CONTRACT_RISK_CAP_PCT <= 0.02:
+    raise ValueError(
+        "PACAPOUNCE_OPTION_MR_ONE_CONTRACT_RISK_CAP_PCT must be between the "
+        "target risk and 0.02"
+    )
+if not 0 < OPTION_MR_MAX_PREMIUM_PCT <= 1:
+    raise ValueError("PACAPOUNCE_OPTION_MR_MAX_PREMIUM_PCT must be in (0, 1]")
+if not 0 < OPTION_MR_DTE_MIN <= OPTION_MR_DTE_MAX:
+    raise ValueError("option MR DTE range is invalid")
+if not 0 < OPTION_MR_DELTA_MIN <= OPTION_MR_DELTA_TARGET <= OPTION_MR_DELTA_MAX < 1:
+    raise ValueError("option MR delta range/target is invalid")
+if not 0 < OPTION_MR_MAX_SPREAD_PCT <= 1:
+    raise ValueError("PACAPOUNCE_OPTION_MR_MAX_SPREAD_PCT must be in (0, 1]")
+if OPTION_MR_MAX_POSITIONS < 1 or OPTION_MR_MAX_ENTRIES_PER_DAY < 1:
+    raise ValueError("option MR requires at least one position and one entry per day")
+if OPTION_MR_MAX_ENTRIES_PER_DAY > OPTION_MR_MAX_POSITIONS:
+    raise ValueError(
+        "PACAPOUNCE_OPTION_MR_MAX_ENTRIES_PER_DAY cannot exceed MAX_POSITIONS"
+    )
 
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -192,8 +287,8 @@ VERDICT_LOG = RUNTIME_DATA_DIR / "verdicts.jsonl"
 SESSION_LOG = RUNTIME_DATA_DIR / "session_log.jsonl"
 RISK_STATE_FILE = RUNTIME_DATA_DIR / "risk_state.json"
 MCP_CALL_LOG = RUNTIME_DATA_DIR / "mcp_calls.json"
-STOCK_MR_STATE_FILE = RUNTIME_DATA_DIR / "stock_mr_state.json"
-STOCK_MR_LOG = RUNTIME_DATA_DIR / "stock_mr_decisions.jsonl"
+OPTION_MR_STATE_FILE = RUNTIME_DATA_DIR / "option_mr_state.json"
+OPTION_MR_LOG = RUNTIME_DATA_DIR / "option_mr_decisions.jsonl"
 GATE_VERSION = "1.4.0"
 CALL_REBOUND_MIN_1D_RETURN = float(os.getenv("PACAPOUNCE_CALL_REBOUND_MIN_1D_RETURN", "-0.01"))
 SESSION_POLICY_VERSION = "1.5.0"

@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from . import config
+from . import config, sizing
 
 
 @dataclass
@@ -303,12 +303,16 @@ def evaluate(spread: dict, ctx: dict) -> Verdict:
     bp_utilization = float(
         ctx.get("options_bp_utilization", config.OPTIONS_BP_UTILIZATION)
     )
+    spread_bp = sizing.spread_budget(
+        options_bp, float(ctx.get("equity") or 0.0), config.SPREAD_EQUITY_PCT
+    )
     risk_cap = (
-        options_bp * bp_utilization
+        spread_bp * bp_utilization
         if config.FULL_BUYING_POWER else config.MAX_TOTAL_RISK_USD
     )
     econ["risk_cap_usd"] = round(risk_cap, 2)
     econ["options_buying_power_usd"] = round(options_bp, 2)
+    econ["spread_equity_budget_pct"] = config.SPREAD_EQUITY_PCT
     econ["sizing_mode"] = config.SIZING_MODE
     within_risk_cap = total_risk <= risk_cap
     risk_cap_label = (

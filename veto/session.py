@@ -71,11 +71,15 @@ def _calendar_time(day: datetime, value: object) -> datetime | None:
 
 
 def _leg_intents(order: dict) -> set[str]:
-    return {
+    intents = {
         str(leg.get("position_intent") or "").lower()
         for leg in (order.get("legs") or [])
         if isinstance(leg, dict)
     }
+    parent_intent = str(order.get("position_intent") or "").lower()
+    if parent_intent:
+        intents.add(parent_intent)
+    return intents
 
 
 def is_opening_order(order: dict) -> bool:
@@ -90,8 +94,8 @@ def is_veto_order(order: dict) -> bool:
     return str(order.get("client_order_id") or "").lower().startswith("veto-")
 
 
-def is_stock_mr_order(order: dict) -> bool:
-    return str(order.get("client_order_id") or "").lower().startswith("paca-mr-")
+def is_option_mr_order(order: dict) -> bool:
+    return str(order.get("client_order_id") or "").lower().startswith("paca-callmr-")
 
 
 def logical_trade_id(order: dict) -> str:
@@ -146,10 +150,10 @@ def count_veto_entries(session_orders: list[dict], activities: list[dict] | None
     })
 
 
-def count_stock_mr_entries(
+def count_option_mr_entries(
     session_orders: list[dict], activities: list[dict] | None = None
 ) -> int:
-    """Count filled MR parent buys from broker state, never process memory."""
+    """Count filled long-call MR entries from broker state, never memory."""
     activity_order_ids = {
         str(activity.get("order_id") or "")
         for activity in (activities or [])
@@ -159,8 +163,9 @@ def count_stock_mr_entries(
     return len({
         str(order.get("client_order_id") or order.get("id") or "").lower()
         for order in session_orders
-        if str(order.get("client_order_id") or "").lower().startswith("paca-mr-open-")
+        if str(order.get("client_order_id") or "").lower().startswith("paca-callmr-open-")
         and str(order.get("side") or "").lower() == "buy"
+        and is_opening_order(order)
         and _has_fill(order, activity_order_ids)
     })
 
@@ -170,14 +175,26 @@ def _is_option_position(position: dict) -> bool:
 
 
 def _spread_count(option_positions: list[dict]) -> int:
-    short_legs = sum(
-        1 for position in option_positions
-        if _f(position.get("qty")) < 0
-        or str(position.get("side") or "").lower() == "short"
-    )
-    # A discovered broker payload without side/negative-qty information still
-    # represents paired option exposure; fail conservatively by counting pairs.
-    return short_legs or math.ceil(len(option_positions) / 2)
+    """Count credit-spread exposure, which is what full-BP sizing consumes.
+
+    The second strategy's long call is a debit position with no short leg. It
+    must not read as an open spread: doing so would report the account as fully
+    deployed and block the credit-spread lane for as long as the call is held.
+    """
+    short_legs = 0
+    unknown = 0
+    for position in option_positions:
+        qty = _f(position.get("qty"))
+        side = str(position.get("side") or "").lower()
+        if qty < 0 or side == "short":
+            short_legs += 1
+        elif qty > 0 or side == "long":
+            continue  # a long leg: a spread's hedge, or a long-call position
+        else:
+            unknown += 1
+    # A payload carrying neither side nor signed quantity still represents
+    # paired option exposure; fail conservatively by counting those as pairs.
+    return short_legs or math.ceil(unknown / 2)
 
 
 @dataclass(frozen=True)
@@ -211,9 +228,9 @@ class SessionSnapshot:
     options_buying_power: float
     buying_power: float
     multiplier: float
-    stock_positions: tuple[dict, ...] = ()
-    pending_stock_orders: tuple[dict, ...] = ()
-    stock_entries_today: int = 0
+    non_option_positions: tuple[dict, ...] = ()
+    pending_option_mr_orders: tuple[dict, ...] = ()
+    option_mr_entries_today: int = 0
 
     def gate_context(self) -> dict:
         return {
@@ -238,8 +255,8 @@ class SessionSnapshot:
             "options_buying_power": round(self.options_buying_power, 2),
             "buying_power": round(self.buying_power, 2),
             "multiplier": self.multiplier,
-            "stock_positions": len(self.stock_positions),
-            "stock_entries_today": self.stock_entries_today,
+            "non_option_positions": len(self.non_option_positions),
+            "option_mr_entries_today": self.option_mr_entries_today,
         }
 
     def public(self) -> dict:
@@ -274,9 +291,9 @@ class SessionSnapshot:
             "buying_power": round(self.buying_power, 2),
             "multiplier": self.multiplier,
             "sizing_mode": config.SIZING_MODE,
-            "stock_positions": len(self.stock_positions),
-            "pending_stock_orders": len(self.pending_stock_orders),
-            "stock_entries_today": self.stock_entries_today,
+            "non_option_positions": len(self.non_option_positions),
+            "pending_option_mr_orders": len(self.pending_option_mr_orders),
+            "option_mr_entries_today": self.option_mr_entries_today,
         }
 
 
@@ -326,15 +343,15 @@ def build_snapshot(
         position for position in _rows(positions_payload, "positions")
         if _is_option_position(position)
     ]
-    stock_positions = [
+    non_option_positions = [
         position for position in _rows(positions_payload, "positions")
         if not _is_option_position(position)
         and str(position.get("asset_class") or "us_equity") == "us_equity"
     ]
-    pending_stock_orders = [
+    pending_option_mr_orders = [
         order for order in open_orders
         if str(order.get("client_order_id") or "").lower().startswith(
-            ("paca-mr-open-", "paca-mr-exit-")
+            ("paca-callmr-open-", "paca-callmr-exit-")
         )
     ]
 
@@ -378,9 +395,9 @@ def build_snapshot(
         options_buying_power=_f(account.get("options_buying_power")),
         buying_power=_f(account.get("buying_power")),
         multiplier=_f(account.get("multiplier")),
-        stock_positions=tuple(stock_positions),
-        pending_stock_orders=tuple(pending_stock_orders),
-        stock_entries_today=count_stock_mr_entries(session_orders, fill_activities),
+        non_option_positions=tuple(non_option_positions),
+        pending_option_mr_orders=tuple(pending_option_mr_orders),
+        option_mr_entries_today=count_option_mr_entries(session_orders, fill_activities),
     )
 
 
@@ -415,12 +432,12 @@ def entry_decision(
             False, "closing_order_pending",
             f"{len(snapshot.pending_closing_orders)} closing order(s) still pending", True,
         )
-    if snapshot.stock_positions or snapshot.pending_stock_orders:
+    if snapshot.non_option_positions:
         return EntryDecision(
             False,
-            "stock_strategy_capital_reserved",
-            f"second Paper strategy has {len(snapshot.stock_positions)} stock position(s) "
-            f"and {len(snapshot.pending_stock_orders)} unresolved entry/exit order(s)",
+            "options_only_violation",
+            f"Alpaca reports {len(snapshot.non_option_positions)} non-option position(s); "
+            "PacaPounce is competition-options-only",
             True,
         )
     # Full-buying-power mode deliberately deploys the complete broker budget
@@ -492,8 +509,10 @@ def capture() -> SessionSnapshot:
     now_et = _timestamp(clock.get("timestamp"))
     day = now_et.date().isoformat()
     start = datetime.combine(now_et.date(), time.min, tzinfo=ET).isoformat()
+    # get_account_activities paginates by token, and a truncated page would
+    # under-count today's filled entries against the daily cap.
     calendar, open_orders, session_orders, activities, positions, account = mcp_client.run(
-        mcp_client.call_many([
+        mcp_client.call_many_all_pages([
             ("get_calendar", {"start": day, "end": day}),
             ("get_orders", {"status": "open", "limit": 500}),
             ("get_orders", {"status": "all", "limit": 500, "after": start}),

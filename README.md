@@ -17,7 +17,7 @@ The implementation retains `veto` as the internal gate-engine package and
 broker client-ID prefix so PacaPounce can reconcile earlier orders safely across
 process restarts. Public runtime configuration uses `PACAPOUNCE_*` variables.
 
-> **Competition paper account:** `PA3NRNIECO2O` · $100,000 start · options level 3.
+> **Competition paper account:** `PA3ZX2FIASSZ` · $100,000 start · options level 3.
 > The judged P&L lives on this account; the dashboard banner verifies the live
 > account number matches before showing results.
 
@@ -25,8 +25,8 @@ process restarts. Public runtime configuration uses `PACAPOUNCE_*` variables.
 
 ```powershell
 cd PacaPounce
-..\.venv\Scripts\python.exe run.py --summary                # ledger stats
-..\.venv\Scripts\python.exe scripts\build_dashboard.py      # ignored live snapshot
+.venv\Scripts\python.exe run.py --summary                # ledger stats
+.venv\Scripts\python.exe scripts\build_dashboard.py      # ignored live snapshot
 start dashboard\index.html                                  # open the judge view
 ```
 
@@ -89,35 +89,75 @@ loss integrates the upper tail. Calls also fail a dedicated rebound-risk gate
 after an index falls more than 1% in a day. Iron condors are not advertised
 until four-leg construction, payoff, sizing, monitoring, and validation exist.
 
-## Second Paper strategy: NDX30 mean reversion
+## Second Paper strategy: NDX30 long-call mean reversion
 
-When no option position or opening order has reserved the tournament account,
-the same `run.py --loop` process gets one deterministic fallback decision at
-15:45 ET on a normal 16:00 session. It scans 30 liquid Nasdaq names and buys at
-most one stock whose 15:30 completed-bar price is above a rising SMA200 while
-Wilder RSI(2) is below 10. Alphabet share classes are issuer-deduplicated.
+The same `run.py --loop` process gets one deterministic second-strategy decision
+at 15:45 ET on a normal 16:00 session. It scans 30 liquid Nasdaq underlyings and
+ranks names whose completed 15:30 bar is above a rising SMA200 while Wilder
+RSI(2) is below 10. Alphabet share classes are issuer-deduplicated. The best
+surviving signal is expressed as a single long call—never as stock. The
+credit-spread lane holds back a 5% slice of options buying power so this lane
+can trade at all; without that reserve, full-buying-power sizing deployed
+everything and the second strategy was structurally unable to place an order.
 
-- Quantity risks 0.5% of equity at a 2×ATR14 hard stop and is capped at 20% of
-  equity notional; no more than three stock positions may coexist.
-- Alpaca MCP submits one Paper OTO stock order, so the protective stop becomes
-  broker-native after entry. `get_orders` must confirm the client ID and broker
-  order ID before SUBMITTED is recorded.
-- The 30-second monitor exits deterministically when the 15:30 price recovers
-  above EMA5 or after three regular sessions. It cancels and verifies the stop
-  before sending the closing order. The LLM never calculates or times an exit.
-- Poe sees the top numeric candidate plus timestamped Alpaca `get_news` output.
+- Python selects a 14–30 DTE call from the live Alpaca chain, requires delta
+  0.55–0.85 and relative bid/ask at most 6%, and submits a `buy_to_open` limit
+  at the ask through Alpaca MCP. Among affordable contracts it takes the one
+  with the cheapest carry, breaking ties toward 0.70 delta.
+- One 15:45 window may open several positions. Each is resolved, gated, and
+  **independently reviewed by the LLM** against its own timestamped Alpaca news
+  pull, so deploying a portfolio is a portfolio of separate AI decisions rather
+  than one bulk allocation.
+- Quantity comes from the active sizing objective. `risk_budget` targets 0.5% of
+  equity at an underlying 2×ATR14 stop model; `tournament` sizes from the premium
+  budget directly, because the competition scores the upper tail rather than the
+  mean. Either way the full premium paid is the legal maximum loss, and the
+  portfolio premium budget and live options buying power both bind.
+- `get_orders` must confirm the client ID and Alpaca broker order ID before
+  SUBMITTED is recorded.
+- The 30-second monitor sends a `sell_to_close` limit at the live bid when the
+  underlying hits its 2×ATR stop, recovers above EMA5 at 15:45, or reaches the
+  third normal session. The LLM never selects the contract, size, or exit.
+- LLM sees the top numeric candidate plus timestamped Alpaca `get_news` output.
   It may veto a concrete news/event risk and writes the thesis. `get_news` is
   **not** presented as a verified earnings calendar; this limitation remains
   explicit on the dashboard.
 
-Frozen 2024 SIP OOS staging result: 146 trades, +4.98%, profit factor 1.394,
-Sharpe 1.353, 53.4% wins, and 1.82% maximum drawdown with 3 bps modeled on each
-stock entry and exit. A separate 2023 screen was positive but below the strict
-promotion card, so this is honestly labeled **Paper Staging**, not production
-proof or guaranteed alpha.
-The compact, machine-readable validation card is
-[`data/ndx30_mr_validation.json`](data/ndx30_mr_validation.json); it contains no
-historical payload dump and records that the research made zero order calls.
+### The fourth edge, and how it died
+
+The frozen 2024 SIP OOS **underlying-signal proxy** produced 146 trades, +4.98%,
+profit factor 1.394, Sharpe 1.353, and 53.4% wins. A 2026 YTD rerun agreed: 108
+trades, +5.30%, profit factor 1.622. The signal is real.
+
+Then the same 2026 window was rebuilt on **historical Alpaca option bars**, so
+the measurement was option P&L rather than a stock proxy — 51 complete
+long-call lifecycles, 47 with a computable size:
+
+| One-way friction | Trades | Win rate | Return | Profit factor |
+|---|---:|---:|---:|---:|
+| 0% (crossing ignored) | 47 | 51.1% | **-0.02%** | 0.997 |
+| 1% | 47 | 51.1% | -1.13% | 0.866 |
+| 3% | 46 | 50.0% | -2.46% | 0.711 |
+| 7.5% | 46 | 34.8% | -7.30% | 0.337 |
+
+**Even with crossing costs set to zero, the long call returns nothing.** The
+arithmetic says why. A measured live contract — AAPL, 18 DTE, 0.69 delta,
+13.49/13.95, spot 313.89 — carries $133.60 per contract over a three-session
+hold: $46.00 of crossing and $87.60 of theta. That needs a **+0.61%** underlying
+move before the trade has an opinion. The signal's measured mean move is
+**+0.795%**. The margin is 1.3x on the most liquid contract on the board.
+
+Buying a call pays the same variance risk premium the primary lane collects. So
+the signal is promoted and its long-call expression is not: the lane is funded
+from a 5% reserve rather than a real allocation, and the 15% relative-spread
+gate — which a live 167-contract chain scan showed was admitting contracts whose
+**bid/ask alone exceeded what the signal could pay, 48% of the time** — was
+replaced by a 6% ceiling plus a per-contract carry test.
+
+That is the same economic gate this project applies to its primary strategy,
+now turned on its own second strategy. The machine-readable card is
+[`data/ndx30_option_mr_validation.json`](data/ndx30_option_mr_validation.json);
+it records the evidence boundary and that research made zero order calls.
 
 Calendar/diagonal structures were excluded pending a cross-expiry assignment
 lifecycle; covered-option combinations require stock inventory; naked and ratio
@@ -158,13 +198,20 @@ works if the assumption holds.
 
 ## Sizing
 
-The hackathon configuration uses `full_buying_power`: after a spread passes the
+The credit-spread lane uses `full_buying_power`: after a spread passes the
 economic model, quantity is the largest integer count whose entire defined loss
-fits inside Alpaca's live `options_buying_power`. This submission intentionally
-sets `PACAPOUNCE_OPTIONS_BP_UTILIZATION=1.0`: on the $100,000 competition account, one
-approved spread may therefore carry nearly $100,000 of defined maximum loss.
-The result records source buying power, usable budget, quantity, total defined
-loss, and utilization percentage.
+fits inside its own equity budget, bounded by Alpaca's live
+`options_buying_power`. The competition sets `PACAPOUNCE_SPREAD_EQUITY_PCT=0.20`
+and `PACAPOUNCE_OPTIONS_BP_UTILIZATION=1.0`, so one approved spread may carry
+about $20,000 of defined maximum loss on the $100,000 account. The result records
+source buying power, the lane budget, quantity, total defined loss, and
+utilization percentage.
+
+This is tournament sizing, not a prudent production allocation — see
+[Tournament mode](#tournament-mode-a-different-objective-stated-as-one) for why
+the remaining capital goes to the convex lane instead of to a bigger spread. Use
+`PACAPOUNCE_SPREAD_EQUITY_PCT=0.95` or `PACAPOUNCE_SIZING_MODE=kelly` outside the
+competition.
 
 This is tournament sizing, not a prudent production allocation. It maximizes
 scored exposure only after all deterministic gates survive, but a single
@@ -174,6 +221,84 @@ dashboard discloses the active 100% allocation and its downside explicitly.
 
 Every sized position reports its full outcome distribution, not just its mean. A
 point estimate is close to useless when the spread of outcomes dwarfs it.
+
+## Tournament mode: a different objective, stated as one
+
+Everything above maximizes **expected value**. The competition does not score
+expected value — it ranks four sessions of P&L. Those are different objectives,
+and optimizing the first cannot win the second.
+
+A credit spread's payoff shape is the reason. It wins about 6% of the capital it
+risks and loses about 94%. Sized at the whole account it produces roughly
++$3–6k in a good week and -$60k in a bad one. **It cannot produce a placing
+number at any size.** The upper tail is closed by the structure itself.
+
+So for the competition window the agent runs a disclosed second objective:
+maximize the upper tail, not the mean.
+
+Measured on the live chain across the 14 tradeable names, holding five sessions
+with $70,000 of premium deployed on a $100,000 account — repriced with each
+contract's own IV and exited at the bid:
+
+| Underlying move | Account P&L |
+|---|---:|
+| -5% | **-33,700** |
+| -3% | -23,300 |
+| **flat** | **-5,500** |
+| +3% | +14,400 |
+| +5% | **+28,400** |
+
+**The flat row is the one that matters most**, because a small move is the modal
+five-day outcome and -5.5% is the rent this configuration pays for its convexity.
+The ±5% rows are conditional scenarios with no probability attached; they are
+not forecasts. Gamma is excluded (it helps the upside) and so is IV change (a
+crush hurts it).
+
+Deeper-in-the-money and longer-dated bands were measured and rejected: they cut
+the flat bleed roughly in half but cut the upside by about the same, so they are
+leverage dials rather than improvements. The 14–30 DTE / 0.55–0.85Δ band had the
+best upside-to-downside ratio of the six tested.
+
+The configuration that follows from this is two equity budgets rather than one:
+
+```
+PACAPOUNCE_SPREAD_EQUITY_PCT=0.20          20% of equity as defined spread loss
+PACAPOUNCE_OPTION_MR_TOTAL_PREMIUM_PCT=0.70   70% of equity as long-call premium
+PACAPOUNCE_OPTION_MR_SIZING_MODE=tournament   size from premium, not the ATR stop
+```
+
+Each lane's share is taken from **equity**, not from whatever buying power is
+left, so a lane's allocation does not depend on which lane filled first.
+
+The universe is restricted to the 14 NDX names whose option chains are actually
+tradeable at 6% relative spread. Measured over ten sessions, leaving the other
+16 in meant the signal regularly fired on names that could never be bought: on
+2026-08-28 it produced four candidates — MDLZ, AMGN, CSCO, GILD — and zero
+deployable premium, because the lowest-RSI names in this universe are also the
+least liquid ones. Restricting it does not create signals on days like that one;
+it makes the ranked candidate list actionable instead of top-heavy with names
+the builder will always reject.
+
+Deployment coverage comes from the RSI threshold rather than the universe: over
+the same ten sessions, RSI(2)<10 left 70% of sessions with a deployable
+candidate and RSI(2)<25 leaves 90%. Since the lane only needs to deploy once at
+the start of the window, two sessions at 90% is about 99%.
+
+**Three things this is not.** It is not a claim that long calls have positive
+expected value here — [the measured evidence](data/ndx30_option_mr_validation.json)
+says they do not, and the honest expectation for this configuration is a small
+negative mean with a fat right tail. It is also a **different strategy from the
+one that was validated**: the 2024/2026 studies used RSI(2)<10, a three-session
+hold, and risk-budget sizing, so their profit factors do not transfer to this
+configuration and are not offered in support of it. It is not a removal of the gates: every
+entry still clears the deterministic stack, the carry test, and an independent
+AI event-risk review. And it is not the default — `SPREAD_EQUITY_PCT=0.95` with
+`OPTION_MR_SIZING_MODE=risk_budget` restores the expected-value configuration.
+
+The `tournament` sizing objective is named rather than smuggled in. The
+alternative would have been to inflate the 0.5% ATR risk budget to ~17% and keep
+calling it a risk budget, which would have been the same position with a
+dishonest label.
 
 ## Architecture
 
@@ -185,7 +310,7 @@ point estimate is close to useless when the spread of outcomes dwarfs it.
   MCP regime brief .......... live spot + completed daily bars + nearest ATM IV
         |                       1D/5D returns, RV20, IV/RV, quote timestamp;
         v                       cached 5 minutes, missing fields stay missing
-  LLM (Poe / gemini-3.7-flash)
+  LLM (gemini-3.7-flash)
         |  intent JSON — never an order, never a strike
         v
   Coherence check ............ can any strike pair satisfy this
@@ -207,13 +332,16 @@ point estimate is close to useless when the spread of outcomes dwarfs it.
   Verdict ledger ............. every proposal, approved and rejected,
                                append-only, with the gate version hash
 
-  15:45 fallback lane ......... SIP D1 + completed 15m bars -> SMA/RSI/ATR/EMA
-        |                       one top stock candidate; options capital must be clear
+  15:45 options MR lane ....... SIP D1 + completed 15m bars -> SMA/RSI/ATR/EMA
+        |                       one top underlying; options capital must be clear
         v
-  Alpaca news + Poe review .... event-risk veto/thesis only; no fake earnings claim
+  Alpaca news + LLM review .... event-risk veto/thesis only; no fake earnings claim
         |
         v
-  Stock OTO + monitor ......... broker stop -> EMA5/3-session deterministic exit
+  Long-call builder ........... live chain -> 14–30 DTE / ~0.70 delta / limit order
+        |
+        v
+  Options monitor ............. ATR stop -> EMA5/3-session deterministic close
 ```
 
 The LLM never names a strike. It emits intent; deterministic code resolves it.
@@ -238,15 +366,15 @@ Everything reaching Alpaca goes through the **official Alpaca MCP server**
 | Account and positions | `get_account_info`, `get_all_positions` |
 | Fill reconciliation | `get_account_activities` (`activity_types="FILL"`) |
 | Multi-leg execution | `place_option_order` (`order_class="mleg"`) |
-| Stock MR bars + event context | `get_stock_bars`, `get_news` |
-| Protected stock execution | `place_stock_order` (`order_class="oto"`), `cancel_order_by_id` |
+| Options-MR signal + event context | `get_stock_bars`, `get_news` |
+| Long-call discovery + execution | `get_option_chain`, `get_option_latest_quote`, `place_option_order`, `get_orders` |
 
 There is no direct Alpaca REST fallback in the runnable agent. An incomplete MCP
 snapshot fails closed. Paper account only — `ALPACA_PAPER_TRADE=true` is pinned
 in `veto/mcp_client.py` and the trading base URL is hard-coded to `paper-api`.
 
 `get_account_info` is also a trade authorization input, not merely a dashboard
-statistic. Before Poe is called, and again immediately before order submission,
+statistic. Before LLM is called, and again immediately before order submission,
 the agent requires account status `ACTIVE`, no broker/user trading block,
 `options_approved_level >= 3`, `options_trading_level >= 3`, and positive
 `options_buying_power`. The full deterministic gate is rerun against that final
@@ -274,7 +402,7 @@ representative no-trade outcomes, with the hidden presentation count disclosed.
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env          # add POE_KEY and Alpaca PAPER keys
+cp .env.example .env          # add LLM_KEY and Alpaca PAPER keys
 
 python run.py --check         # environment + connectivity diagnostics
 python run.py --offline --measure 10   # LLM + gates, no Alpaca keys needed
@@ -297,8 +425,9 @@ PacaPounce loads only `PacaPounce/.env`; it never falls back to an `.env` in a
 parent directory. This prevents another project from silently changing the
 paper account, model, market-data feed, or risk policy.
 
-The monitor reconstructs credit spreads and the second strategy's stock lifecycle
-from Alpaca's live positions and polls every 30 seconds. It batches independent MCP requests, measures both
+The monitor reconstructs credit spreads and the second strategy's long-call
+lifecycle from Alpaca's live option positions and polls every 30 seconds. It
+batches independent MCP requests, measures both
 midpoint and immediately executable P&L, and takes profit after 50% of the opening
 credit is captured. A restart-safe profit ratchet arms after 20% capture and
 closes after two confirmed observations give back 20% of the executable high
@@ -310,11 +439,11 @@ before it may mutate; the explicitly mutating `run.py --loop` command enables it
 bundled paper monitor. Both paths check the MCP environment and trade URL for
 paper mode at startup.
 
-For managed stocks, the same monitor treats the broker OTO stop as the overnight
-safety layer. At the daily decision window it uses completed SIP bars to test
-EMA5 recovery and the Alpaca calendar to count regular holding sessions. Before
-a dynamic sell it cancels the protective stop and confirms that no stop remains,
-preventing two live sell orders from racing against one long position.
+For managed long calls, the same monitor checks the underlying against the 2×ATR
+stop throughout each regular session. At the daily decision window it uses
+completed SIP bars to test EMA5 recovery and the Alpaca calendar to count normal
+holding sessions. Every triggered exit is a sell-to-close option limit at the
+live bid, reconciled by client ID and Alpaca broker order ID.
 
 `run.py --loop` owns the full paper-session lifecycle. It waits for Alpaca to
 open, starts the deterministic monitor with paper auto-exits plus the live
@@ -328,10 +457,10 @@ entries fail closed. Reaching the daily trade cap locks
 new proposals but leaves risk monitoring active through the closing bell. In
 `full_buying_power` mode the 8%-annual figure remains visible as a benchmark but
 does not force a profit exit. Once its first full-capital spread is open, entry
-hunting enters a broker-backed wait state before Poe is called; the risk monitor
+hunting enters a broker-backed wait state before LLM is called; the risk monitor
 continues through the closing bell. `Ctrl+C` cleanly stops both processes.
 
-The bundled entry loop is supervised by Alpaca MCP. Before any Poe request,
+The bundled entry loop is supervised by Alpaca MCP. Before any LLM request,
 it reads the broker clock and calendar, open and same-day orders, positions, and
 account. It pauses outside the regular session (including short sessions), sleeps
 toward MCP's next opening bell, blocks while an opening or closing order is
@@ -365,15 +494,18 @@ high-water/floor evidence, parent close fill, gross locked P&L, and whether Alpa
 confirms the entire account is flat; it never labels a local submission as a fill.
 
 After a profitable close, the exited pair remains under MCP quote observation.
-The agent waits 30 minutes and requires 10 calm, liquid minutes before it may
-ask Poe for one new idea. The re-entry gate then requires post-cost EV per defined-risk
-dollar to beat the prior entry by 25%, with no worse delta, strike buffer, or
-liquidity and no identical OCC pair. Tournament re-entry uses 100% of live options
+The agent waits 15 minutes and requires 10 calm, liquid minutes before it may
+ask LLM for a new idea, and one profitable exit may earn up to three same-day
+re-entries. The re-entry gate still requires post-cost EV per defined-risk
+dollar at least matching the prior entry, with no worse delta, strike buffer, or
+liquidity and no identical OCC pair — every attempt clears the full economic
+gate, so relaxing the old arbitrary 25%-improvement bar admits more trades
+without admitting worse ones. Tournament re-entry uses 100% of live options
 buying power, matching the initial sizing objective. Risk exits lock re-entry for
 the rest of the session, and this lifecycle
 state is persisted across process restarts.
 
-Poe's activity page may show two calls near one timestamp. That is a bounded
+LLM's activity page may show two calls near one timestamp. That is a bounded
 decision window: an invalid, unbuildable, or economically vetoed intent may receive
 one reasoned revision. An economic revision must materially diversify DTE,
 underlying, or strategy; broker/session failures receive no retry. The loop starts another window
@@ -452,7 +584,7 @@ variance. That is the reason to validate offline, and the reason this harness ex
 ```
 run.py                     CLI: check / propose / trade / measure / loop / summary
 veto/config.py             all thresholds, from .env
-veto/llm.py                Poe client; reasoning-token aware
+veto/llm.py                LLM client; reasoning-token aware
 veto/regime.py             cached MCP returns, RV20, ATM IV, and IV/RV brief
 veto/intent.py             intent schema + pre-chain coherence check
 veto/mcp_client.py         Alpaca MCP stdio client

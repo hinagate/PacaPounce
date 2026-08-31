@@ -13,7 +13,9 @@ from datetime import date, datetime, timedelta, timezone
 
 from . import config, mcp_client, skew
 from .gates import expected_value, friction_usd
-from .sizing import buying_power_contracts, kelly_contracts, target_contract_cap
+from .sizing import (
+    buying_power_contracts, kelly_contracts, spread_budget, target_contract_cap,
+)
 from .intent import Intent
 
 
@@ -162,7 +164,9 @@ def build(intent: Intent, spot: float, today: date,
         lo, hi = spot * 0.995, spot * 1.10 + width
 
     for expiry in expiries_in_range(intent.dte_min, intent.dte_max, today):
-        chain = mcp_client.run(mcp_client.call(
+        # get_option_chain does accept page_token: follow it to EOF so a
+        # truncated first page can never hide the delta-target strike.
+        chain = mcp_client.run(mcp_client.call_all_pages(
             "get_option_chain",
             underlying_symbol=intent.underlying,
             expiration_date=expiry,
@@ -230,8 +234,12 @@ def build(intent: Intent, spot: float, today: date,
             bp_utilization = float(
                 account.get("options_bp_utilization", config.OPTIONS_BP_UTILIZATION)
             )
+            # Size against this lane's own equity budget, so the long-call
+            # lane's share is still there after this spread fills.
             ksz = buying_power_contracts(
-                options_buying_power,
+                spread_budget(
+                    options_buying_power, equity, config.SPREAD_EQUITY_PCT
+                ),
                 sizing_econ["max_loss_usd"],
                 bp_utilization,
                 config.MAX_CONTRACTS,

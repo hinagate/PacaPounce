@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Paper monitor for PacaPounce option spreads and managed MR stocks.
+"""Paper monitor for PacaPounce option spreads and MR long calls.
 
 The monitor treats Alpaca as the source of truth, polls through the official
 Alpaca MCP server, and reconstructs each spread from the live option legs. It
@@ -16,9 +16,10 @@ Exit policy:
 * on expiry day, suppress the ordinary stop and close only for late pin risk;
 * stop polling when the regular market session closes.
 
-Managed NDX30_MR_01 stocks keep a broker-native OTO stop overnight. At the
-15:45 ET decision window the monitor exits on EMA5 recovery or the third regular
-holding session, canceling and verifying the protective stop before it sells.
+Managed NDX30_CALL_MR_01 long calls use the same 30-second loop. It checks the
+underlying 2x ATR stop during the regular session, then exits on EMA5 recovery
+or the third normal session at 15:45 ET. Every exit is an options sell-to-close
+limit order reconciled against Alpaca.
 
 Usage:
     python scripts/monitor.py                         # observe only
@@ -534,7 +535,9 @@ def _build_opening_context(order: dict) -> dict:
     if short_occ is None or long_occ is None:
         raise ValueError("opening order contains an invalid OCC symbol")
 
-    quote_payload, spot_payload, chain_payload = mcp_client.run(mcp_client.call_many([
+    # get_option_snapshot and get_option_chain both accept page_token; the
+    # latest-quote lookup returns none and completes on its first page.
+    quote_payload, spot_payload, chain_payload = mcp_client.run(mcp_client.call_many_all_pages([
         ("get_option_snapshot", {
             "symbols": f"{short_leg['symbol']},{long_leg['symbol']}",
             "feed": config.OPTIONS_FEED,
@@ -811,10 +814,10 @@ def cycle(execute: bool = False) -> dict:
         "target_max_contracts": config.MAX_CONTRACTS,
     }
 
-    # The same paper-only monitor owns the second strategy's broker-native stop
-    # reconciliation and deterministic EMA5/time exit.  This keeps run.py
-    # --loop a single command and prevents an unmonitored stock entry.
-    state["stock_mean_reversion"] = mean_reversion.monitor_cycle(
+    # The same paper-only monitor owns the second options strategy's underlying
+    # stop plus deterministic EMA5/time exit. This keeps run.py --loop a single
+    # command and prevents an unmonitored option entry.
+    state["option_mean_reversion"] = mean_reversion.monitor_cycle(
         clock, order_payload, position_payload, account, execute
     )
 
@@ -831,7 +834,12 @@ def cycle(execute: bool = False) -> dict:
         if chase_results:
             state["chase_results"] = chase_results
 
-    spreads, pairing_errors = pair_spreads(positions)
+    mr_contracts = set(state["option_mean_reversion"].get("managed_contracts") or [])
+    spread_positions = [
+        position for position in positions
+        if str(position.get("symbol") or "").upper() not in mr_contracts
+    ]
+    spreads, pairing_errors = pair_spreads(spread_positions)
     state["spreads"] = len(spreads)
     if pairing_errors:
         state["pairing_errors"] = pairing_errors
@@ -1033,14 +1041,14 @@ def main() -> int:
                     f"execPnL=${monitored.get('pnl_executable', 0):+.2f} "
                     f"{monitored['decision']}"
                 )
-            stock_mr = row.get("stock_mean_reversion") or {}
-            if stock_mr.get("enabled"):
+            option_mr = row.get("option_mean_reversion") or {}
+            if option_mr.get("enabled"):
                 message += (
-                    f" | MR stocks={stock_mr.get('broker_stock_positions', 0)}"
-                    f"/{stock_mr.get('managed', 0)} managed"
+                    f" | MR calls={option_mr.get('broker_option_positions', 0)}"
+                    f"/{option_mr.get('managed', 0)} managed"
                 )
-                if stock_mr.get("events"):
-                    message += f" events={len(stock_mr['events'])}"
+                if option_mr.get("events"):
+                    message += f" events={len(option_mr['events'])}"
             print(message, flush=True)
             if not row.get("is_open"):
                 print("regular market session closed - monitor exiting for today", flush=True)

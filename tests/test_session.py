@@ -214,7 +214,7 @@ def test_full_buying_power_with_open_spread_waits_before_poe():
     assert "$0.00 options BP remaining" in decision.detail
 
 
-def test_open_stock_position_reserves_capital_from_full_bp_options():
+def test_non_option_position_fails_options_only_account_boundary():
     snap = snapshot(positions=[{
         "symbol": "AAPL", "asset_class": "us_equity", "qty": "50",
         "side": "long",
@@ -222,10 +222,26 @@ def test_open_stock_position_reserves_capital_from_full_bp_options():
 
     decision = session.entry_decision(snap)
 
-    assert snap.public()["stock_positions"] == 1
+    assert snap.public()["non_option_positions"] == 1
     assert not decision.allowed
-    assert decision.reason == "stock_strategy_capital_reserved"
+    assert decision.reason == "options_only_violation"
     assert decision.waitable
+
+
+def test_single_leg_option_mr_entry_is_counted_from_parent_intent():
+    option_mr = {
+        "id": "mr-1",
+        "client_order_id": "paca-callmr-open-20260825-aapl-123456",
+        "status": "filled",
+        "filled_qty": "1",
+        "symbol": "AAPL260918C00095000",
+        "side": "buy",
+        "position_intent": "buy_to_open",
+    }
+
+    snap = snapshot(orders=[option_mr])
+
+    assert snap.option_mr_entries_today == 1
 
 
 def test_reentry_cooldown_blocks_before_another_poe_proposal():

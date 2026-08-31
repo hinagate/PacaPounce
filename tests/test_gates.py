@@ -33,6 +33,7 @@ CTX = {
     "options_approved_level": 3,
     "options_trading_level": 3,
     "options_buying_power": 10_000.0,
+    "equity": 100_000.0,
 }
 
 
@@ -192,7 +193,8 @@ def test_alpaca_options_gate_requires_spread_level_and_unblocked_account():
     assert "alpaca_options_eligible" in {c.name for c in blocked.failures}
 
 
-def test_full_buying_power_gate_rejects_defined_loss_above_broker_budget():
+def test_full_buying_power_gate_rejects_defined_loss_above_broker_budget(monkeypatch):
+    monkeypatch.setattr(config, "SPREAD_EQUITY_PCT", 1.0)
     verdict = evaluate(
         _spread(qty=2, width=2.0, long_delta=0.05,
                 long_symbol="SPY260828P00638000"),
@@ -202,7 +204,8 @@ def test_full_buying_power_gate_rejects_defined_loss_above_broker_budget():
     assert "exceeds $300.00 Alpaca options-BP budget by $40.00" in failure.detail
 
 
-def test_full_buying_power_gate_describes_a_passing_comparison():
+def test_full_buying_power_gate_describes_a_passing_comparison(monkeypatch):
+    monkeypatch.setattr(config, "SPREAD_EQUITY_PCT", 1.0)
     verdict = evaluate(
         _spread(qty=1, width=2.0, long_delta=0.05,
                 long_symbol="SPY260828P00638000"),
@@ -211,6 +214,25 @@ def test_full_buying_power_gate_describes_a_passing_comparison():
     check = next(c for c in verdict.checks if c.name == "total_risk_cap")
     assert check.passed
     assert "<= $300.00 Alpaca options-BP budget" in check.detail
+
+
+def test_spread_lane_is_capped_by_its_own_equity_budget(monkeypatch):
+    """Each lane owns a share of equity, so the long-call lane's budget does not
+    depend on which lane happened to fill first."""
+    monkeypatch.setattr(config, "SPREAD_EQUITY_PCT", 0.20)
+    spread = _spread(qty=1, width=2.0, long_delta=0.05,
+                     long_symbol="SPY260828P00638000")
+
+    # Equity is the binding side: 20% of $1,000 is less than the $900 of BP.
+    tight = evaluate(spread, {**CTX, "equity": 1_000.0,
+                              "options_buying_power": 900.0})
+    assert tight.economics["risk_cap_usd"] == 200.0
+
+    # Broker buying power is the binding side when it is the smaller number.
+    broke = evaluate(spread, {**CTX, "equity": 100_000.0,
+                              "options_buying_power": 150.0})
+    assert broke.economics["risk_cap_usd"] == 150.0
+    assert broke.economics["spread_equity_budget_pct"] == 0.20
 
 
 def test_call_spread_after_sharp_selloff_fails_rebound_gate():

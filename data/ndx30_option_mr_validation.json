@@ -1,0 +1,152 @@
+{
+  "strategy_id": "NDX30_CALL_MR_01",
+  "status": "PAPER_STAGING_OPTION_EXPRESSION_NOT_VALIDATED",
+  "decision": "PROMOTE_SIGNAL; DO_NOT_PROMOTE_LONG_CALL_EXPRESSION_ON_ITS_MEASURED_RETURN",
+  "data_source": "Alpaca MCP SIP stock bars for the underlying signal",
+  "order_calls": 0,
+  "frozen_signal": {
+    "universe_size": 30,
+    "signal_time_et": "15:30 completed bar observed at 15:45",
+    "entry": "price > SMA200; SMA200 rising one session; Wilder RSI(2) < 10",
+    "ranking": "lowest RSI(2), maximum one entry per day, GOOG/GOOGL issuer deduplication",
+    "underlying_exit": "15:45 price > EMA5 or 3 normal holding sessions",
+    "signal_friction_model": "3 bps on entry and 3 bps on exit"
+  },
+  "options_execution": {
+    "instrument": "single long call",
+    "dte": "14-30",
+    "target_delta": 0.7,
+    "eligible_delta": "0.55-0.85",
+    "maximum_relative_bid_ask": 0.06,
+    "entry": "buy_to_open limit at current ask",
+    "exit": "sell_to_close limit at current bid",
+    "risk": "0.5% modeled stop-risk target; one-contract discrete exception capped at 2%; 20% equity premium cap; full paid premium is legal maximum loss",
+    "monitor": "30-second underlying 2x ATR14 stop plus the frozen EMA5/time exit",
+    "stock_orders_permitted": false,
+    "economic_gate": "reject unless round-trip crossing plus square-root theta over the maximum holding period needs a smaller underlying move than the measured signal edge"
+  },
+  "underlying_signal_oos_2024": {
+    "is_option_pnl": false,
+    "sessions": 249,
+    "raw_signals": 405,
+    "trades": 146,
+    "wins": 78,
+    "losses": 68,
+    "win_rate": 0.5342,
+    "net_pnl_usd_on_100k": 4975.26,
+    "return_pct": 4.9753,
+    "profit_factor": 1.3942,
+    "sharpe": 1.3532,
+    "max_drawdown_pct": 1.8224,
+    "expectancy_usd_per_trade": 34.08,
+    "max_positions": 3,
+    "largest_abs_symbol_contribution": {
+      "symbol": "NVDA",
+      "pct": 41.7
+    }
+  },
+  "underlying_signal_screen_2023": {
+    "is_option_pnl": false,
+    "trades": 120,
+    "return_pct": 3.67,
+    "profit_factor": 1.3015,
+    "sharpe": 0.8858,
+    "strict_card_passed": false
+  },
+  "limitations": [
+    "The 2024, 2023, and 2026 headline figures validate the underlying timing signal, not option returns.",
+    "The 2026 option reconstruction covers 47% of signal trades and uses option bars, not historical bid/ask or Greeks; it is not a broker-fill replay.",
+    "Even at zero modeled friction the reconstructed long-call expression returns ~0%, so the negative conclusion does not depend on the friction assumption.",
+    "The carry gate uses a single measured edge constant; it bounds obvious losers, it does not create an edge.",
+    "Historical option slippage and IV movement are not represented by the stock-signal proxy.",
+    "Alpaca get_news is not an independently verified earnings calendar.",
+    "Paper staging is not evidence of production alpha or future profitability."
+  ],
+  "decision_note": "The underlying timing signal is positive and frequent. The long-call expression of it is not: reconstructed on historical Alpaca option bars it returns roughly zero before friction and loses after it. The lane is therefore funded only from a small reserve, sized so it can demonstrate the end-to-end options lifecycle, and every contract must now clear a carry gate before entry.",
+  "underlying_signal_2026_ytd": {
+    "is_option_pnl": false,
+    "period": [
+      "2026-01-02",
+      "2026-08-28"
+    ],
+    "sessions": 165,
+    "raw_signals": 287,
+    "trades": 108,
+    "win_rate": 0.5833,
+    "return_pct": 5.3043,
+    "profit_factor": 1.6223,
+    "sharpe": 2.1444,
+    "max_drawdown_pct": 1.7334,
+    "expectancy_usd_per_trade": 49.11,
+    "mean_underlying_move_pct_per_trade": 0.795,
+    "median_underlying_move_pct_per_trade": 0.789,
+    "stdev_underlying_move_pct_per_trade": 3.136,
+    "five_session_windows_with_entry_pct": 97.52
+  },
+  "option_expression_2026_ytd": {
+    "is_option_pnl": true,
+    "finding": "no measurable edge before friction; negative after it",
+    "period": [
+      "2026-01-02",
+      "2026-08-28"
+    ],
+    "underlying_signal_trades": 108,
+    "complete_option_lifecycles": 51,
+    "coverage_pct": 47.22,
+    "scenarios": [
+      {
+        "one_way_friction_pct": 0.0,
+        "trades": 47,
+        "win_rate": 0.5106,
+        "return_pct": -0.021,
+        "profit_factor": 0.9974,
+        "expectancy_usd_per_trade": -0.45
+      },
+      {
+        "one_way_friction_pct": 1.0,
+        "trades": 47,
+        "win_rate": 0.5106,
+        "return_pct": -1.1344,
+        "profit_factor": 0.8664,
+        "expectancy_usd_per_trade": -24.14
+      },
+      {
+        "one_way_friction_pct": 3.0,
+        "trades": 46,
+        "win_rate": 0.5,
+        "return_pct": -2.4582,
+        "profit_factor": 0.7108,
+        "expectancy_usd_per_trade": -53.44
+      },
+      {
+        "one_way_friction_pct": 7.5,
+        "trades": 46,
+        "win_rate": 0.3478,
+        "return_pct": -7.3021,
+        "profit_factor": 0.3368,
+        "expectancy_usd_per_trade": -158.74
+      }
+    ],
+    "reconstruction_limitations": [
+      "Alpaca MCP exposes historical option trades/bars but not historical bid/ask quotes or Greeks.",
+      "Delta is inferred from the completed 15-minute option trade bar with Black-Scholes (4% rate, 1% dividend yield).",
+      "Contract selection cannot reproduce the live relative-spread gate; friction scenarios replace that unavailable field.",
+      "Results are an option-bar reconstruction, not broker-fill or exact quote replay."
+    ]
+  },
+  "carry_arithmetic": {
+    "why_the_option_expression_fails": "A long call must pay round-trip crossing plus holding-period theta before the signal's direction is worth anything. Measured on the live Alpaca chain, an 18-DTE 0.69-delta AAPL call at 13.49/13.95 with spot 313.89 carries $133.60 per contract over a three-session hold - $46.00 of crossing and $87.60 of theta - which needs a +0.61% underlying move just to break even. The signal's measured mean move is +0.795%. The margin is 1.3x on the most liquid contract available, and negative on most of the rest.",
+    "measured_live_chain_sample": {
+      "contracts_examined": 167,
+      "delta_and_dte_eligible": 167,
+      "passing_old_15pct_spread_gate": 115,
+      "of_those_already_unpayable": 55,
+      "of_those_already_unpayable_pct": 48,
+      "break_even_spread_ceiling_median_pct": 7.1,
+      "break_even_spread_ceiling_p25_pct": 5.5,
+      "break_even_spread_ceiling_p75_pct": 8.2,
+      "passing_new_6pct_spread_gate": 67
+    },
+    "conclusion": "Buying a call pays the same variance risk premium the credit-spread lane collects. The 15% relative-spread gate admitted contracts whose bid/ask alone exceeded what the signal could pay, so the gate was tightened to 6% and a per-contract carry test was added."
+  }
+}

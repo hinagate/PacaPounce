@@ -107,18 +107,8 @@ def _snapshot_map(payload) -> dict[str, dict]:
 def _refresh(spots: dict[str, float], broker_date: date) -> dict[str, dict]:
     start = (broker_date - timedelta(days=70)).isoformat()
     end = (broker_date + timedelta(days=1)).isoformat()
-    calls: list[tuple[str, dict]] = [
-        ("get_stock_bars", {
-            "symbols": ",".join(config.ALLOWLIST),
-            "timeframe": "1Day",
-            "start": start,
-            "end": end,
-            "adjustment": "all",
-            "feed": "sip",
-            "limit": 10_000,
-            "sort": "asc",
-        }),
-    ]
+    symbol_csv = ",".join(config.ALLOWLIST)
+    calls: list[tuple[str, dict]] = []
     for symbol in config.ALLOWLIST:
         spot = spots.get(symbol, 0.0)
         calls.append(("get_option_contracts", {
@@ -135,9 +125,21 @@ def _refresh(spots: dict[str, float], broker_date: date) -> dict[str, dict]:
             "limit": 500,
         }))
 
-    payloads = mcp_client.run(mcp_client.call_many(calls))
-    bars_payload = payloads[0] if payloads else {}
-    contract_payloads = payloads[1:]
+    # get_stock_bars cannot follow a page token, so it is completed with time
+    # windows; get_option_contracts can, and is followed to EOF.
+    bars_payload = mcp_client.run(mcp_client.call_time_windows(
+        "get_stock_bars",
+        symbols=symbol_csv,
+        timeframe="1Day",
+        start=start,
+        end=end,
+        adjustment="all",
+        feed="sip",
+        limit=10_000,
+        sort="asc",
+        window_days=mcp_client.bar_window_days(len(config.ALLOWLIST)),
+    ))
+    contract_payloads = mcp_client.run(mcp_client.call_many_all_pages(calls))
     raw: dict[str, dict] = {}
     selected_by_symbol: dict[str, list[str]] = {}
     selected_symbols: list[str] = []

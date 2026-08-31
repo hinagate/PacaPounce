@@ -23,11 +23,12 @@ tournament objective. It submits only atomic multi-leg orders that pass every
 gate. A live OPRA monitor then reconciles Alpaca positions every 30 seconds and
 manages fills and deterministic exits. The 8%-annual objective remains a visible
 benchmark rather than a tournament stop. Every proposal, veto, order, fill, and
-P&L result is auditable, and MCP tool usage is counted. A second, independently
-tested Paper-Staging lane scans 30 liquid Nasdaq stocks once at 15:45 ET for a
-long-trend RSI(2) mean-reversion setup. Python computes its signal, 0.5%-risk
-size, 2×ATR broker stop, and EMA5/three-session exit; Poe reviews only timestamped
-Alpaca news for event risk and writes the thesis.
+P&L result is auditable, and MCP tool usage is counted. A second Paper-Staging
+options lane scans 30 liquid Nasdaq underlyings once at 15:45 ET for a long-trend
+RSI(2) mean-reversion setup, then expresses the strongest signal as a 14–30 DTE
+long call near 0.70 delta. Python chooses the contract, computes its size and
+manages its exit; LLM reviews timestamped Alpaca news for event risk and writes
+the thesis. Neither strategy can place a stock order.
 
 ## The story
 
@@ -58,7 +59,7 @@ say **no** for explicit, testable reasons.
 ```mermaid
 flowchart LR
     S[MCP session supervisor] -->|entry permitted| R[MCP regime brief]
-    S -->|closed, pending, capped| X[Wait or stop without Poe call]
+    S -->|closed, pending, capped| X[Wait or stop without LLM call]
     R -->|returns, RV20, ATM IV, IV/RV| A[LLM thesis]
     A --> B[Strict intent JSON]
     B --> C[Deterministic contract builder]
@@ -71,36 +72,74 @@ flowchart LR
     H --> J[30-second OPRA monitor]
     J --> K[Profit, loss, pin-risk, and daily-target exits]
     K -->|Alpaca is source of truth| L[P&L + dashboard + audit trail]
-    S -->|15:45, option capital clear| M[NDX30 SIP mean-reversion scan]
+    S -->|15:45, reserve available| M[NDX30 SIP mean-reversion scan]
     M --> N[Alpaca get_news + one AI event review]
-    N --> O[Paper stock OTO + broker stop]
-    O --> J
+    N --> O[Live chain + deterministic long-call builder]
+    O --> P[Paper buy-to-open limit]
+    P --> J
 ```
 
-### Second Paper strategy — independently tested fallback
+### Second Paper strategy — options-only mean reversion
 
-`NDX30_MR_01` is not a free-form LLM idea. Its frozen numerical policy is price
+`NDX30_CALL_MR_01` is not a free-form LLM idea. Its frozen numerical policy is price
 above a rising SMA200 plus Wilder RSI(2) below 10, ranked once per normal session.
-It risks 0.5% of equity at a 2×ATR14 stop, caps one name at 20% notional, permits
-one new stock entry/day and three concurrent positions, then exits above EMA5 or
-after three regular sessions. Options and stock entries are mutually exclusive
-while either lane has reserved capital.
+For each approved underlying, Python selects a 14–30 DTE call, rejects delta
+outside 0.55–0.85 or relative bid/ask above 6%, and sizes it from the active
+objective — a 0.5%-equity ATR risk budget by default, or the premium budget in
+tournament mode. One 15:45 window may open several positions, and each gets its
+own news pull and its own AI event-risk review, so a portfolio of entries is a
+portfolio of separate AI decisions. The monitor closes at the underlying 2×ATR
+stop, an EMA5 recovery at 15:45, or the holding-session limit. The LLM never
+selects the contract, quantity, or exit.
 
-The 2024 SIP OOS staging card produced 146 trades, +4.98%, PF 1.394, Sharpe 1.353,
-53.4% wins and 1.82% maximum drawdown after 3 bps modeled on both sides. A 2023
-screen was positive but below the strict promotion thresholds, so the dashboard
-calls this **Paper Staging**, not proven live alpha.
-The compact evidence card is `data/ndx30_mr_validation.json` and records zero
-order calls during research.
+**We measured this lane's option-level return and did not like the answer.** The
+underlying signal is real and reproduces across years: 146 trades / +4.98% / PF
+1.394 on the frozen 2024 SIP OOS proxy, and 108 trades / +5.30% / PF 1.622 on a
+2026 YTD rerun. But rebuilding the 2026 window on **historical Alpaca option
+bars** — 51 complete long-call lifecycles — measures the thing that actually
+trades:
 
-| Same fallback capital | Before strategy 2 | After strategy 2 | Increment |
-|---|---:|---:|---:|
-| 2024 OOS, $100k start | $100,000.00 | $104,975.26 | +$4,975.26 (+4.975%) |
-| Earlier 2023 screen | $100,000.00 | ~$103,670.00 | +3.67% (strict card failed) |
+| One-way friction | Trades | Win rate | Return | Profit factor |
+|---|---:|---:|---:|---:|
+| 0% (crossing ignored) | 47 | 51.1% | **-0.02%** | 0.997 |
+| 1% | 47 | 51.1% | -1.13% | 0.866 |
+| 3% | 46 | 50.0% | -2.46% | 0.711 |
+| 7.5% | 46 | 34.8% | -7.30% | 0.337 |
 
-“Before” means the fallback allocation stays idle. This is not presented as an
-exact strategy-1-versus-combined portfolio replay: live capital interlock blocks
-the stock lane whenever an option spread or opening order has reserved capital.
+Zero friction still returns nothing, so the conclusion does not depend on a
+friction assumption. The arithmetic explains it: a measured live contract
+(AAPL, 18 DTE, 0.69 delta, 13.49/13.95, spot 313.89) carries $133.60 per
+contract over a three-session hold — $46.00 crossing, $87.60 theta — needing a
+**+0.61%** underlying move before direction matters, against the signal's
+measured **+0.795%** mean. Buying a call pays the same variance risk premium
+strategy 1 collects.
+
+Two things changed as a result, and both are the project's own economic gate
+applied to its own second strategy:
+
+1. **The liquidity gate was doing no economic work.** A live 167-contract chain
+   scan found that 48% of the contracts admitted by the old 15% relative-spread
+   ceiling had a bid/ask wider than their own break-even. That ceiling is now
+   6%, plus a per-contract carry test that rejects any call needing a bigger
+   move than the measured signal edge.
+2. **The lane's funding became an explicit objective choice.** For the
+   competition window it carries 70% of equity in premium — not because the
+   expression is profitable, but because a four-session P&L leaderboard scores
+   the upper tail and a credit spread's payoff shape (win ~6%, lose ~94%) cannot
+   produce a placing number at any size. That objective change is named in the
+   configuration (`OPTION_MR_SIZING_MODE=tournament`) and disclosed in the
+   README rather than hidden inside an inflated risk budget. The honest
+   expectation for it is a small negative mean with a fat right tail.
+
+`data/ndx30_option_mr_validation.json` carries all of this, and records zero
+order calls during research. The honest label is that the **signal** is
+promoted and its **long-call expression** is not.
+
+The identified fix is to express the same signal by *selling* premium rather
+than buying it, which puts the signal on the same side of the variance premium
+as strategy 1. That is not shipped: it is unvalidated, and tuning it on the same
+2026 window that produced the negative result would be exactly the overfitting
+this project exists to argue against.
 
 The AI receives only the selected candidate, computed indicators, fixed order
 plan, and timestamped `get_news` output. That feed is not an earnings calendar;
@@ -111,7 +150,7 @@ Read-only end-to-end prompt replay (2026-08-28, zero order calls): the completed
 30-symbol scan selected `MDLZ` at 62.37 with RSI(2) 7.23, rising SMA200
 58.28/58.24, EMA5 62.88 and ATR14 1.16. Deterministic sizing produced 214 shares
 and a 60.04 broker stop. Alpaca `get_news` returned no articles in the supplied
-four-day interval. Poe returned:
+four-day interval. LLM returned:
 
 ```json
 {
@@ -128,7 +167,7 @@ Paper OTO, then requires `get_orders` to return its client ID and Alpaca order I
 ### Session lifecycle before each proposal
 
 The autonomous loop starts from broker truth, not from a Python counter. Before
-calling Poe it uses Alpaca MCP to process five named controls in order:
+calling LLM it uses Alpaca MCP to process five named controls in order:
 
 1. **Trading session** — `get_clock` and `get_calendar` wait before the regular
    open and pause at the actual close, including shortened sessions. MCP
@@ -157,12 +196,12 @@ sleeps toward MCP `next_open` and automatically starts a new daily session. A
 monitor startup failure blocks entries. Reaching
 the target or daily cap locks proposals while monitoring continues until close.
 
-Poe activity is bounded to one initial intent plus at most one reasoned revision.
+LLM activity is bounded to one initial intent plus at most one reasoned revision.
 An economic rejection must diversify DTE, underlying, or strategy; broker/session
 failures close the window immediately. The next window starts only after the next
 MCP session refresh permits it. The deterministic monitor never proposes entries.
 
-Each allowed window gives Poe a compact, timestamped regime brief built from
+Each allowed window gives LLM a compact, timestamped regime brief built from
 Alpaca MCP: current spot, 1-day and 5-day return, 20-day realized volatility,
 nearest-ATM call/put implied volatility, and IV/RV. Expensive history and snapshot
 lookups are cached for five minutes. The prompt explicitly forbids inventing VIX,
@@ -271,7 +310,7 @@ paper account funded at $100,000**:
 
 | Field | Value |
 |---|---|
-| Alpaca paper account ID | **`PA3NRNIECO2O`** |
+| Alpaca paper account ID | **`PA3ZX2FIASSZ`** |
 | Starting balance | `$100,000.00` |
 | Options approval level | 3 |
 | Sizing | `full_buying_power`, `PACAPOUNCE_OPTIONS_BP_UTILIZATION=1.0` |
@@ -289,7 +328,7 @@ risk lifecycle, and MCP telemetry are independently namespaced by that account.
 > **Note.** The earlier verified single-trade result (SPY 756/751 put credit
 > spread, +$20.50 account P&L, 2026-08-25) was recorded on the previous
 > development account and is **not** eligible for judging. Competition P&L is
-> being accumulated fresh on `PA3NRNIECO2O` across the Aug 28 – Sep 4 window with
+> being accumulated fresh on `PA3ZX2FIASSZ` across the Aug 28 – Sep 4 window with
 > `run.py --loop`. Re-run the demo commands below to regenerate the live P&L
 > table and dashboard snapshot on the $100k account before final submission.
 
@@ -325,9 +364,9 @@ separation.
 
 ```powershell
 cd PacaPounce
-..\.venv\Scripts\python.exe run.py --summary
-..\.venv\Scripts\python.exe scripts\monitor.py --once
-..\.venv\Scripts\python.exe scripts\validate_gate.py --trials 12000 --perms 2000
+.venv\Scripts\python.exe run.py --summary
+.venv\Scripts\python.exe scripts\monitor.py --once
+.venv\Scripts\python.exe scripts\validate_gate.py --trials 12000 --perms 2000
 ```
 
 Account equity, positions, fills, and activities come from Alpaca. The verdict
@@ -345,14 +384,15 @@ ledger records decisions, but it is never treated as the P&L source of truth.
 | Contract discovery | Option chains, Greeks, IV, bid/ask, timestamps | `veto/builder.py` |
 | Historical context | Completed daily stock bars for model-grounding returns and realized-volatility estimation | `veto/regime.py`, `veto/builder.py` |
 | Second Paper signal | One 15:45 ET normal-session scan of adjusted SIP daily + completed 15-minute bars; Python computes SMA200, Wilder RSI(2), EMA5, ATR14, issuer deduplication and ranking | `veto/mean_reversion.py` |
-| Auditable AI news review | `get_news` supplies timestamped context for the top numeric candidate; Poe can veto concrete event risk and write a thesis, but the UI explicitly does not call this a verified earnings calendar | `veto/mean_reversion.py`, `veto/llm.py`, `scripts/build_dashboard.py` |
-| Protected stock execution | Paper OTO market entry with 2×ATR14 broker stop; `get_orders` client-ID reconciliation is required before SUBMITTED; stop is canceled and verified before a deterministic EMA5/three-session exit | `veto/mean_reversion.py`, `scripts/monitor.py` |
-| Strategy capital interlock | An open/pending stock MR position blocks full-BP options proposals, while option spread exposure blocks the 15:45 stock fallback | `veto/session.py`, `run.py` |
+| Auditable AI news review | `get_news` supplies timestamped context for the top numeric candidate; LLM can veto concrete event risk and write a thesis, but the UI explicitly does not call this a verified earnings calendar | `veto/mean_reversion.py`, `veto/llm.py`, `scripts/build_dashboard.py` |
+| Options-only MR construction | `get_option_chain` selects a 14–30 DTE call nearest 0.70 delta; freshness, delta, and relative-spread filters are deterministic | `veto/mean_reversion.py` |
+| Reconciled long-call execution | `place_option_order` sends `buy_to_open`/`sell_to_close` limit orders; `get_orders` client-ID and Alpaca order-ID reconciliation is required before SUBMITTED | `veto/mean_reversion.py`, `scripts/monitor.py` |
+| Strategy capital budget | The credit-spread lane sizes against options BP less a 5% reserve, so both strategies can hold positions in the same session; a long call is not counted as an open spread | `veto/sizing.py`, `veto/session.py`, `veto/gates.py` |
 | Two-sided EV | Put spreads integrate the left tail; call spreads integrate the upper tail, including positive equity drift and a post-selloff rebound guard | `veto/skew.py`, `veto/gates.py` |
 | Execution | Atomic multi-leg option orders with explicit open/close intents; one-cent, natural-price-bounded opening chase; cancel-time collateral release and post-cancel options-BP reconciliation; replacement EV at the actual limit; an MCP `accepted` envelope counts only after `get_orders(status=all)` returns the same client ID and an Alpaca broker order ID | `veto/executor.py`, `scripts/monitor.py` |
 | Session lifecycle | Broker clock + calendar govern pre-open waiting and early closes; MCP `next_open` rolls one process across nights, weekends, and holidays | `veto/session.py`, `run.py` |
-| Pending-order interlock | Open parent orders block Poe before a new proposal and are checked again before submit | `veto/session.py`, `run.py` |
-| Full-capital proposal lock | In full-buying-power mode, one broker-confirmed open spread pauses new Poe proposals while monitoring continues | `veto/session.py`, `run.py` |
+| Pending-order interlock | Open parent orders block LLM before a new proposal and are checked again before submit | `veto/session.py`, `run.py` |
+| Full-capital proposal lock | In full-buying-power mode, one broker-confirmed open spread pauses new LLM proposals while monitoring continues | `veto/session.py`, `run.py` |
 | Restart-safe daily cap | Parent PacaPounce entries are rebuilt from same-day orders, child-leg FILL activities corroborate execution, and chase revisions share one logical ID | `veto/session.py`, `veto/executor.py` |
 | Reconciliation | Account, clock, positions, orders, fills, activities | `veto/pnl.py`, `scripts/monitor.py` |
 | One-command lifecycle | `--loop` stays resident across trading days while starting/stopping the proposal loop, paper risk monitor, and 60-second dashboard builder per session | `run.py`, `scripts/monitor.py`, `scripts/build_dashboard.py` |
@@ -422,12 +462,12 @@ The presentation should show one connected story rather than a tour of files:
 
 ```powershell
 cd PacaPounce
-..\.venv\Scripts\python.exe run.py --check
-..\.venv\Scripts\python.exe run.py --propose
-..\.venv\Scripts\python.exe scripts\monitor.py --once
-..\.venv\Scripts\python.exe run.py --summary
-..\.venv\Scripts\python.exe scripts\build_dashboard.py
-..\.venv\Scripts\python.exe -m pytest tests -q
+.venv\Scripts\python.exe run.py --check
+.venv\Scripts\python.exe run.py --propose
+.venv\Scripts\python.exe scripts\monitor.py --once
+.venv\Scripts\python.exe run.py --summary
+.venv\Scripts\python.exe scripts\build_dashboard.py
+.venv\Scripts\python.exe -m pytest tests -q
 ```
 
 Do not run `--trade`, `--loop`, or `monitor.py --execute` during the recorded
@@ -511,20 +551,20 @@ The lablab × Alpaca submission form requires all of the following:
 - [ ] **Short description** — see the paste-ready short description above.
 - [ ] **Long description** — this document.
 - [ ] **Technology & category tags** — Alpaca Trading API, Alpaca MCP server,
-      options, autonomous agent, Poe/LLM.
+      options, autonomous agent, LLM.
 - [ ] **Cover image.**
 - [ ] **Video presentation** (three-minute demo, script above).
 - [ ] **Slide presentation** (deck — not yet built; create before submission).
 - [ ] **Public GitHub repository** (MIT `LICENSE` included in `PacaPounce/`).
 - [ ] **Demo application platform + Application URL** — host `dashboard/index.html`
       (e.g. GitHub Pages) and paste the live URL.
-- [ ] **Alpaca paper trading account ID** — **`PA3NRNIECO2O`** ($100,000 start).
+- [ ] **Alpaca paper trading account ID** — **`PA3ZX2FIASSZ`** ($100,000 start).
 - [ ] Up to **5 social posts** (X + LinkedIn, tagging @lablab.ai and @Alpaca).
 
 ## Reproducibility and judge checklist
 
 - [ ] Confirm the account under judging is the fresh $100k account
-      **`PA3NRNIECO2O`** and that the dashboard banner shows the ✓ match.
+      **`PA3ZX2FIASSZ`** and that the dashboard banner shows the ✓ match.
 - [ ] Accumulate competition P&L on that account across Aug 28 – Sep 4 via
       `run.py --loop`, then rebuild the dashboard.
 - [ ] Add public repository URL.
@@ -532,7 +572,7 @@ The lablab × Alpaca submission form requires all of the following:
 - [ ] Add a three-minute demo video using the script above.
 - [ ] Show Alpaca paper mode and redact every credential/secret (the account ID
       is intentionally shown — it is a required judging field).
-- [ ] Capture the filled multi-leg orders and final flat account on `PA3NRNIECO2O`.
+- [ ] Capture the filled multi-leg orders and final flat account on `PA3ZX2FIASSZ`.
 - [ ] Include the live P&L table with timestamp.
 - [ ] Label all 12,000-trial numbers as simulation.
 - [ ] Run and record the test suite (`pytest tests -q`).

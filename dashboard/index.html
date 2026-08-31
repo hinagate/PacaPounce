@@ -126,13 +126,13 @@ independently validated policy is allowed to touch the broker. Gate 1.4.0.</p>
 <section aria-labelledby="live-overview">
 <div class="overview-head"><div><h2 id="live-overview">Live account overview</h2>
 <p>Read-only broker state and the newest bounded decision windows.</p></div>
-<p>Snapshot generated 2026-08-29T08:24:52-04:00 ET · auto-reload 60s</p></div>
+<p>Snapshot generated 2026-08-31T01:07:44-04:00 ET · auto-reload 60s</p></div>
 <button class="refresh-btn" type="button" onclick="window.location.reload()">Reload latest broker snapshot</button>
 
 <h3 style="font-size:14px;margin:0 0 8px">Account</h3>
 <div class="simple-table"><table><thead><tr><th>Metric</th><th>Value</th></tr></thead>
-<tbody><tr><td>Paper account</td><td>PA3ZX2FIASSZ VERIFIED</td></tr><tr><td>Equity</td><td>$100,000.00</td></tr><tr><td>Cash</td><td>$100,000.00</td></tr><tr><td>Options buying power</td><td>$100,000.00</td></tr><tr><td>Daily P&amp;L</td><td>$0.00</td></tr><tr><td>Agent activity</td><td>0 option entries / 0 broker fills</td></tr><tr><td>Last equity (prior close)</td><td>$100,000.00</td></tr></tbody></table></div>
-<div class="note"><b>Account boundary verified.</b> Alpaca MCP and <code>ALPACA_ACCOUNT_ID</code> both identify <code>PA3ZX2FIASSZ</code>. Runtime ledger, monitor state, and MCP telemetry are isolated under this account.</div>
+<tbody><tr><td>Paper account</td><td>PA3ZX2FIASSZ UNVERIFIED</td></tr><tr><td>Equity</td><td>-</td></tr><tr><td>Cash</td><td>-</td></tr><tr><td>Options buying power</td><td>-</td></tr><tr><td>Daily P&amp;L</td><td>-</td></tr><tr><td>Agent activity</td><td>-</td></tr><tr><td>Last equity (prior close)</td><td>-</td></tr></tbody></table></div>
+<div class="note warn"><b>Account boundary failed.</b> Financial results are suppressed, and the entry agent plus exit monitor fail closed until the live MCP account exactly matches <code>ALPACA_ACCOUNT_ID</code>.</div>
 
 <h3 style="font-size:14px;margin:24px 0 8px">Open positions</h3>
 <div class="simple-table"><table><thead><tr><th>Asset</th><th>Qty</th>
@@ -148,41 +148,29 @@ independently validated policy is allowed to touch the broker. Gate 1.4.0.</p>
 <code>run.py --loop</code> is the process that rebuilds it from Alpaca MCP. At market close,
 the final broker snapshot remains visible until the next session.</div>
 
-<h3 style="font-size:14px;margin:24px 0 8px">Second Paper strategy · NDX30_MR_01</h3>
+<h3 style="font-size:14px;margin:24px 0 8px">Second options strategy · NDX30_CALL_MR_01</h3>
 <div class="tiles">
   <div class="tile"><div class="k">Staging status</div><div class="v" style="font-size:18px">NOT RUN</div>
     <div class="f">awaiting the next 15:45 ET regular-session scan</div></div>
-  <div class="tile"><div class="k">Managed stock positions</div><div class="v">0</div>
+  <div class="tile"><div class="k">Managed long calls</div><div class="v">0</div>
     <div class="f">maximum 3; one new entry/day</div></div>
-  <div class="tile"><div class="k">2024 SIP OOS</div><div class="v pos">PF 1.394</div>
-    <div class="f">146 trades · Sharpe 1.353 · max DD 1.82%</div></div>
+  <div class="tile"><div class="k">Underlying signal OOS</div><div class="v pos">PF 1.394</div>
+    <div class="f">146 stock-signal trades · not option P&amp;L</div></div>
+  <div class="tile"><div class="k">Options contract</div><div class="v" style="font-size:18px">14-30 DTE call</div>
+    <div class="f">target delta 0.70 · bid/ask cap 15%</div></div>
   <div class="tile"><div class="k">Frozen signal</div><div class="v" style="font-size:18px">RSI(2) &lt; 10</div>
     <div class="f">price &gt; rising SMA200 · scan 15:45 ET</div></div>
 </div>
-<h3 style="font-size:13px;margin:18px 0 8px">Before / after · same historical fallback capital</h3>
-<div class="simple-table"><table><thead><tr><th>Comparison</th><th>Starting equity</th>
-<th>Ending equity</th><th>Incremental P&amp;L</th><th>Result</th></tr></thead><tbody>
-<tr><td>Before · strategy 2 absent</td><td>$100,000.00</td>
-<td>$100,000.00</td><td>$0.00</td><td>Fallback allocation remains idle</td></tr>
-<tr><td>After · NDX30_MR_01 (2024 OOS)</td><td>$100,000.00</td>
-<td>$104,975.26</td><td class="pos">$4,975.26 (+4.975%)</td>
-<td>78/146 wins · max DD 1.82%</td></tr>
-<tr><td>Earlier screen · 2023</td><td>$100,000.00</td>
-<td>$103,670.00</td>
-<td class="pos">+3.67%</td>
-<td>Positive, but PF 1.302 / Sharpe 0.886 failed the strict card</td></tr>
-</tbody></table></div>
-<div class="note"><b>Paper Staging, not production proof.</b> Python scans 30
-liquid Nasdaq names, sizes 0.5% equity risk with a
-2×ATR14 broker stop, and exits above EMA5 or after
-3 regular sessions. The AI reviews only timestamped
-<code>get_news</code> context and writes the thesis. <b>Earnings calendar independently
-verified: no.</b> News search is not presented as a deterministic earnings gate.</div>
-<div class="note warn"><b>Comparison boundary.</b> “Before” means the same fallback
-allocation stays idle; it is not a reconstructed options-strategy return. The stock
-OOS result is not simply added to options P&amp;L because the live orchestrator blocks
-stock entry whenever an option spread or opening order has reserved capital. Exact
-combined performance requires a synchronized historical option + stock event replay.</div>
+<div class="note"><b>Options-only execution.</b> Python scans 30
+liquid Nasdaq underlyings, resolves one real OCC long call from Alpaca, sizes
+to a 0.5% modeled-risk target (one-contract
+ceiling 2%) under a
+20% premium cap, and submits only
+<code>place_option_order</code> limit orders. No stock order exists in the strategy.</div>
+<div class="note warn"><b>Evidence boundary.</b> The 2024 +4.98%
+and PF 1.394 validate the underlying timing signal,
+not historical option returns. IV, theta and option bid/ask effects require forward Paper
+evidence and are never mixed into competition P&amp;L.</div>
 </section>
 
 <details class="deep-dive">
@@ -230,25 +218,25 @@ audit live in the <b>Presentation &amp; Execution</b> table below and in
 <span class="why">Alpaca paper account, live</span></div>
 <div class="tiles">
   <div class="tile"><div class="k">Account daily P&amp;L</div>
-    <div class="v neg">$0.00</div>
+    <div class="v ">-</div>
     <div class="f">equity minus last equity</div></div>
-  <div class="tile"><div class="k">Strategy P&amp;L</div><div class="v">$0.00</div>
+  <div class="tile"><div class="k">Strategy P&amp;L</div><div class="v">-</div>
     <div class="f">fill-derived, 0 broker fills</div></div>
-  <div class="tile"><div class="k">Open P&amp;L</div><div class="v">$0.00</div>
+  <div class="tile"><div class="k">Open P&amp;L</div><div class="v">-</div>
     <div class="f">0 positions</div></div>
-  <div class="tile"><div class="k">Equity</div><div class="v">$100,000</div>
-    <div class="f">options approved L3 / enabled L3</div></div>
+  <div class="tile"><div class="k">Equity</div><div class="v">-</div>
+    <div class="f">options approved L- / enabled L-</div></div>
   <div class="tile"><div class="k">Options buying power</div>
-    <div class="v">$100,000</div>
-    <div class="f">binding full-capital budget; equity multiplier 4.0x</div></div>
-  <div class="tile"><div class="k">Orders sent</div><div class="v">0</div>
+    <div class="v">-</div>
+    <div class="f">binding full-capital budget; equity multiplier -x</div></div>
+  <div class="tile"><div class="k">Orders sent</div><div class="v">-</div>
     <div class="f">of 0 approved</div></div>
 </div>
 <h2 style="font-size:14px;margin:26px 0 4px">Did the gate's forecast hold up?</h2>
 <p class="sub" style="margin-bottom:2px">What the gate <em>predicted</em> across approved trades,
 next to what the account actually realized. A gate that forecasts well keeps these bars close.</p>
-<div class="cbars"><div class="cbar-row"><span class="cbar-label">Predicted EV (approved)</span><div class="cbar-track"><div class="cbar-fill pos" style="width:0.0%"></div></div><span class="cbar-val pos">$0.00</span></div><div class="cbar-row"><span class="cbar-label">Realized strategy P&amp;L</span><div class="cbar-track"><div class="cbar-fill pos" style="width:0.0%"></div></div><span class="cbar-val pos">$0.00</span></div><div class="cbar-row"><span class="cbar-label">Account daily P&amp;L</span><div class="cbar-track"><div class="cbar-fill pos" style="width:0.0%"></div></div><span class="cbar-val pos">$0.00</span></div></div>
-<div class="note"><b>Predicted vs actual.</b> The gate forecast $0.00 of expected value across 0 approved option proposals. Fill-derived strategy P&amp;L: $0.00; account daily P&amp;L: $0.00. The difference is left visible for broker reconciliation. A short window is dominated by variance - this is a reconciliation, not evidence of edge.</div>
+<div class="note">Predicted-vs-actual populates once the live account has approved fills.</div>
+<div class="note warn"><b>Paper account not reachable.</b> live fetch skipped (--no-live). Judge-facing P&amp;L remains suppressed until the configured paper account is verified through Alpaca MCP.</div>
 <div class="note"><b>Latest position lifecycle.</b> No deterministic exit has been recorded yet.</div>
 <div class="note warn"><b>Tournament risk disclosure.</b> The configured
 <code>full_buying_power</code> objective may allocate up to
@@ -330,14 +318,15 @@ permission from Alpaca. No daily trade counter or pending-order lock lives only 
     <span class="layer">MCP + AI</span></div><p><code>get_news</code> supplies timestamped articles
     for the selected numerical candidate. Poe may veto concrete event risk and write the thesis.
     The feed is not mislabeled as a verified earnings calendar.</p></div>
-  <div class="gate-card"><div class="top"><span class="seq">S3</span><h3>Broker-native protection</h3>
-    <span class="layer">MCP</span></div><p><code>place_stock_order</code> submits a Paper OTO with
-    a 2×ATR14 stop. <code>get_orders</code> must return the same client ID and an Alpaca order ID
-    before the dashboard records SUBMITTED.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">S3</span><h3>Exact long-call execution</h3>
+    <span class="layer">MCP</span></div><p><code>get_option_chain</code> resolves a liquid
+    14-30 DTE call near
+    0.70 delta. <code>place_option_order</code> submits a
+    buy-to-open limit; <code>get_orders</code> must confirm it before SUBMITTED.</p></div>
   <div class="gate-card"><div class="top"><span class="seq">S4</span><h3>Deterministic lifecycle</h3>
     <span class="layer">MCP + POLICY</span></div><p>The 30-second monitor reconciles broker
-    positions and stops, cancels the protective child before an EMA5/time exit, and uses
-    <code>get_calendar</code> to count regular holding sessions. The LLM never times exits.</p></div>
+    option positions, checks the underlying 2×ATR14 stop, and sends a sell-to-close
+    limit on stop, EMA5 recovery, or session three. The LLM never times exits.</p></div>
 </div>
 <div class="note"><b>Every Alpaca interaction goes through MCP.</b>
 <code>get_option_chain</code> and <code>get_option_snapshot</code> supply strikes, real bid/ask
@@ -425,7 +414,7 @@ append-only record, including every gate result and gate version, remains in
 </section>
 
 </details>
-</div><script>const DATA={"rows": [], "presentation": {"raw_attempts": 0, "decision_windows": 0, "approved_windows": 0, "submitted_windows": 0, "blocked_windows": 0, "collapsed_retries": 0, "shown_rows": 0, "suppressed_rows": 0, "recent_window_limit": 10, "veto_reasons": {}}, "tools": {"get_account_info": 1, "get_all_positions": 1, "get_account_activities": 1}, "gates": [{"name": "defined_risk", "label": "Defined risk", "layer": "Structure", "question": "Is every short option protected by a long option?"}, {"name": "allowlist", "label": "Underlying allowlist", "layer": "Policy", "question": "Is the underlying explicitly permitted?"}, {"name": "alpaca_options_eligible", "label": "Alpaca options eligibility", "layer": "Broker", "question": "Does Alpaca report an active, unblocked Level 3+ options account with buying power?"}, {"name": "position_size", "label": "Position size", "layer": "Sizing", "question": "Is the requested contract count below the hard ceiling?"}, {"name": "open_positions", "label": "Open-position limit", "layer": "Portfolio", "question": "Can the portfolio accept another position?"}, {"name": "daily_trade_limit", "label": "Daily trade limit", "layer": "Portfolio", "question": "Is the agent still inside its daily activity budget?"}, {"name": "annual_target_budget", "label": "Objective budget", "layer": "Objective", "question": "Does the selected objective permit another entry?"}, {"name": "no_duplicate", "label": "Duplicate exposure", "layer": "Portfolio", "question": "Is the proposed short contract absent from current holdings?"}, {"name": "quote_freshness", "label": "Quote freshness", "layer": "Market data", "question": "Are both leg quotes recent enough to trust?"}, {"name": "liquidity", "label": "Liquidity", "layer": "Market data", "question": "Are both bid/ask spreads inside the liquidity threshold?"}, {"name": "max_loss_cap", "label": "Per-contract loss cap", "layer": "Risk", "question": "Is defined loss per contract inside policy?"}, {"name": "total_risk_cap", "label": "Alpaca buying-power cap", "layer": "Risk", "question": "Can reported options buying power collateralize the entire defined loss?"}, {"name": "limit_order_only", "label": "Limit order only", "layer": "Execution", "question": "Will the spread be submitted as a limit order?"}, {"name": "call_rebound_risk", "label": "Call rebound risk", "layer": "Economics", "question": "For a call spread, has the index avoided a sharp one-day selloff that can rebound?"}, {"name": "reentry_quality", "label": "Re-entry improvement", "layer": "Lifecycle", "question": "After a profit exit, is this candidate materially better and no riskier than the exited trade?"}, {"name": "economic_ev", "label": "Economic EV", "layer": "Economics", "question": "Is expected value positive after measured execution friction?"}], "ai_model": "gemini-3.7-flash"};
+</div><script>const DATA={"rows": [], "presentation": {"raw_attempts": 0, "decision_windows": 0, "approved_windows": 0, "submitted_windows": 0, "blocked_windows": 0, "collapsed_retries": 0, "shown_rows": 0, "suppressed_rows": 0, "recent_window_limit": 10, "veto_reasons": {}}, "tools": {"get_stock_bars": 6, "get_option_chain": 6}, "gates": [{"name": "defined_risk", "label": "Defined risk", "layer": "Structure", "question": "Is every short option protected by a long option?"}, {"name": "allowlist", "label": "Underlying allowlist", "layer": "Policy", "question": "Is the underlying explicitly permitted?"}, {"name": "alpaca_options_eligible", "label": "Alpaca options eligibility", "layer": "Broker", "question": "Does Alpaca report an active, unblocked Level 3+ options account with buying power?"}, {"name": "position_size", "label": "Position size", "layer": "Sizing", "question": "Is the requested contract count below the hard ceiling?"}, {"name": "open_positions", "label": "Open-position limit", "layer": "Portfolio", "question": "Can the portfolio accept another position?"}, {"name": "daily_trade_limit", "label": "Daily trade limit", "layer": "Portfolio", "question": "Is the agent still inside its daily activity budget?"}, {"name": "annual_target_budget", "label": "Objective budget", "layer": "Objective", "question": "Does the selected objective permit another entry?"}, {"name": "no_duplicate", "label": "Duplicate exposure", "layer": "Portfolio", "question": "Is the proposed short contract absent from current holdings?"}, {"name": "quote_freshness", "label": "Quote freshness", "layer": "Market data", "question": "Are both leg quotes recent enough to trust?"}, {"name": "liquidity", "label": "Liquidity", "layer": "Market data", "question": "Are both bid/ask spreads inside the liquidity threshold?"}, {"name": "max_loss_cap", "label": "Per-contract loss cap", "layer": "Risk", "question": "Is defined loss per contract inside policy?"}, {"name": "total_risk_cap", "label": "Alpaca buying-power cap", "layer": "Risk", "question": "Can reported options buying power collateralize the entire defined loss?"}, {"name": "limit_order_only", "label": "Limit order only", "layer": "Execution", "question": "Will the spread be submitted as a limit order?"}, {"name": "call_rebound_risk", "label": "Call rebound risk", "layer": "Economics", "question": "For a call spread, has the index avoided a sharp one-day selloff that can rebound?"}, {"name": "reentry_quality", "label": "Re-entry improvement", "layer": "Lifecycle", "question": "After a profit exit, is this candidate materially better and no riskier than the exited trade?"}, {"name": "economic_ev", "label": "Economic EV", "layer": "Economics", "question": "Is expected value positive after measured execution friction?"}], "ai_model": "gemini-3.7-flash"};
 const R=DATA.rows,D=DATA.presentation,T=DATA.tools,G=DATA.gates;
 const f=(n,d=2)=>n==null?'-':(n>=0?'+':'')+n.toFixed(d);
 const esc=v=>String(v??'').replace(/[&<>"']/g,ch=>({

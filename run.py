@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 """PacaPounce - the patient AI trading agent.
 
-  LLM (Poe / gemini-3.7-flash)  ->  intent JSON
+  LLM (gemini-3.7-flash)  ->  intent JSON
   Deterministic builder          ->  real contracts from the Alpaca MCP chain
   Gate stack                     ->  operational firewall + economic check
   Executor                       ->  atomic multi-leg limit order, paper only
-  NDX30 MR fallback              ->  one tested 15:45 stock decision, paper only
+  NDX30 call-MR fallback         ->  one 15:45 long-call decision, paper only
 
 Usage:
   python run.py --check                 environment + connectivity diagnostics
@@ -371,10 +371,38 @@ def check() -> int:
     print(f"  options feed         {config.OPTIONS_FEED}")
     print(f"  allowlist            {config.ALLOWLIST}")
     print(f"  sizing objective     {config.SIZING_MODE}")
-    print(f"  options BP use       {config.OPTIONS_BP_UTILIZATION:.0%}")
     print(
-        f"  second Paper strategy {'ON' if config.STOCK_MR_ENABLED else 'OFF'} - "
-        f"NDX30 mean reversion, {len(config.STOCK_MR_UNIVERSE)} symbols"
+        f"  spread lane budget   {config.SPREAD_EQUITY_PCT:.0%} of equity as defined "
+        f"loss, at {config.OPTIONS_BP_UTILIZATION:.0%} utilization"
+    )
+    print(
+        f"  second options strategy {'ON' if config.OPTION_MR_ENABLED else 'OFF'} - "
+        f"NDX30 long-call mean reversion, {len(config.OPTION_MR_UNIVERSE)} underlyings"
+    )
+    if config.OPTION_MR_ENABLED:
+        print(
+            f"  call lane budget     {config.OPTION_MR_TOTAL_PREMIUM_PCT:.0%} of equity "
+            f"in premium, <= {config.OPTION_MR_MAX_PREMIUM_PCT:.0%} per position, "
+            f"{config.OPTION_MR_MAX_POSITIONS} positions, "
+            f"{config.OPTION_MR_MAX_ENTRIES_PER_DAY}/day"
+        )
+        print(
+            f"  call lane objective  {config.OPTION_MR_SIZING_MODE}"
+            + (
+                "  <-- UPPER-TAIL objective, not expected value"
+                if config.OPTION_MR_TOURNAMENT else ""
+            )
+        )
+        print(
+            f"  call lane filters    RSI(2)<{config.OPTION_MR_RSI_MAX:g}, spread<="
+            f"{config.OPTION_MR_MAX_SPREAD_PCT:.0%}, carry<="
+            f"{config.OPTION_MR_CARRY_CEILING_PCT:.2%}, hold "
+            f"{config.OPTION_MR_MAX_HOLD_SESSIONS} sessions"
+        )
+    print(
+        f"  entry turnover       {config.MAX_TRADES_PER_DAY}/day, up to "
+        f"{config.REENTRY_MAX_PER_DAY} re-entries per profitable exit after "
+        f"{config.REENTRY_COOLDOWN_MIN}m cooldown"
     )
 
     raw, reply = llm.propose("Date: test. SPY spot 640, calm tape. Propose one trade.")
@@ -578,8 +606,8 @@ def autonomous_loop(offline: bool) -> int:
                 f"  {status['now_et']} | {status['phase']} | "
                 f"entries={status['trades_today']}/{config.MAX_TRADES_PER_DAY} | "
                 f"pending-open={status['pending_opening_orders']} | "
-                f"spreads={status['open_spreads']}/{config.MAX_OPEN_POSITIONS} | "
-                f"stocks={status['stock_positions']}/{config.STOCK_MR_MAX_POSITIONS} | "
+                f"option-structures={status['open_spreads']}/{config.MAX_OPEN_POSITIONS} | "
+                f"MR-entries={status['option_mr_entries_today']}/{config.OPTION_MR_MAX_ENTRIES_PER_DAY} | "
                 f"P&L=${status['daily_pnl_usd']:+.2f}/${status['daily_target_usd']:.2f}",
                 flush=True,
             )
@@ -633,14 +661,14 @@ def autonomous_loop(offline: bool) -> int:
             )
             if mr_result:
                 print(
-                    f"  STOCK MR - {mr_result.get('status')}: "
+                    f"  OPTION MR - {mr_result.get('status')}: "
                     f"{mr_result.get('reason') or 'portfolio preflight in progress'}",
                     flush=True,
                 )
 
             if mr_submitted:
                 print(
-                    "  OPTION ENTRY WAIT - stock MR order reached Alpaca; "
+                    "  PRIMARY ENTRY WAIT - option-MR order reached Alpaca; "
                     "refreshing broker state before any other proposal",
                     flush=True,
                 )

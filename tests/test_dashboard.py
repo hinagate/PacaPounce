@@ -179,15 +179,15 @@ def test_dashboard_contains_ai_intent_and_ordered_gate_catalog(tmp_path, monkeyp
     assert "Profit high-water" in html
     assert "Better re-entry" in html
     assert "Re-entry improvement" in html
-    assert "Second Paper strategy" in html
-    assert "NDX30_MR_01" in html
+    assert "Second options strategy" in html
+    assert "NDX30_CALL_MR_01" in html
     assert "PF 1.394" in html
-    assert "Earnings calendar independently" in html
+    assert "not historical option returns" in html
     assert "Second-strategy MCP lane" in html
-    assert "place_stock_order" in html
-    assert "Before / after" in html
-    assert "$104,975.26" in html
-    assert "Comparison boundary" in html
+    assert "place_option_order" in html
+    assert "No stock order exists" in html
+    assert "14-30 DTE call" in html
+    assert "Evidence boundary" in html
     assert (
         f'http-equiv="refresh" content="{build_dashboard.config.DASHBOARD_REFRESH_INTERVAL_SEC}"'
         in html

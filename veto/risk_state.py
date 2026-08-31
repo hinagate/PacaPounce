@@ -199,6 +199,24 @@ def _relative_quote_width(quote: dict | None) -> float:
     return (ask - bid) / mid if mid > 0 and ask >= bid else 1.0
 
 
+def _reentry_count(exit_state: dict) -> int:
+    """How many re-entries this exit has already produced.
+
+    Older state files recorded a single ``reentry_consumed`` boolean; read it
+    so a restart mid-session cannot forget a re-entry that was already used.
+    """
+    if exit_state.get("reentry_count") is not None:
+        try:
+            return max(int(exit_state["reentry_count"]), 0)
+        except (TypeError, ValueError):
+            return 0
+    return 1 if exit_state.get("reentry_consumed") else 0
+
+
+def _reentries_exhausted(exit_state: dict) -> bool:
+    return _reentry_count(exit_state) >= config.REENTRY_MAX_PER_DAY
+
+
 def _entry_baseline(spread: dict) -> dict | None:
     from . import ledger
 
@@ -254,7 +272,7 @@ def record_exit(
         ).isoformat(),
         "action": action,
         "eligible": action in {"profit_target", "profit_ratchet"},
-        "reentry_consumed": False,
+        "reentry_count": 0,
         "underlying": spread.get("underlying"),
         "right": spread.get("right"),
         "short_symbol": spread.get("short_symbol"),
@@ -292,7 +310,7 @@ def exit_market_watch(now_et: datetime, path: Path | None = None) -> dict | None
     if (
         submitted is None
         or submitted.date() != now_et.astimezone(ET).date()
-        or exit_state.get("reentry_consumed")
+        or _reentries_exhausted(exit_state)
     ):
         return None
     if not exit_state.get("short_symbol") or not exit_state.get("long_symbol"):
@@ -380,12 +398,16 @@ def reentry_status(now_et: datetime, path: Path | None = None) -> dict:
         "exit": exit_state,
         "bp_utilization": config.REENTRY_BP_UTILIZATION,
     }
-    if exit_state.get("reentry_consumed"):
+    used = _reentry_count(exit_state)
+    if _reentries_exhausted(exit_state):
         return {
             **common,
             "allowed": False,
             "reason": "reentry_already_used",
-            "detail": "the single same-day re-entry has already been submitted",
+            "detail": (
+                f"{used}/{config.REENTRY_MAX_PER_DAY} same-day re-entries "
+                f"already submitted after this exit"
+            ),
         }
     if not exit_state.get("eligible"):
         return {
@@ -436,7 +458,7 @@ def mark_reentry_submission(
     if not isinstance(exit_state, dict):
         return
     maximum_loss = float(economics.get("max_loss_usd") or 0.0)
-    exit_state["reentry_consumed"] = True
+    exit_state["reentry_count"] = _reentry_count(exit_state) + 1
     exit_state["reentry_submission"] = {
         "at": datetime.now(ET).isoformat(),
         "client_order_id": execution.get("client_order_id"),

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from . import ledger, mcp_client
+from . import ledger, mcp_client, mean_reversion
 
 
 def _f(v, default=0.0) -> float:
@@ -52,7 +52,7 @@ def closed_activity(days: int = 30) -> list[dict]:
     """Stock and option fills, including still-open inventory."""
     after = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
     try:
-        res = mcp_client.run(mcp_client.call(
+        res = mcp_client.run(mcp_client.call_all_pages(
             "get_account_activities", activity_types="FILL", after=after))
     except Exception:
         return []
@@ -170,6 +170,12 @@ def summary(days: int = 30) -> dict:
     entries = ledger.load()
     executed = [e for e in entries if (e.get("execution") or {}).get("submitted")]
     approved = [e for e in entries if (e.get("verdict") or {}).get("approved")]
+    option_mr_executed = [
+        row for row in mean_reversion.load_log()
+        if row.get("kind") == "decision"
+        and row.get("status") == "SUBMITTED"
+        and (row.get("execution") or {}).get("submitted")
+    ]
 
     # What the gate PREDICTED across the trades it let through.
     predicted_ev = round(sum(
@@ -197,7 +203,7 @@ def summary(days: int = 30) -> dict:
         "open_positions": len(positions),
         "positions": positions,
         "fills": len(activity),
-        "orders_submitted": len(executed),
+        "orders_submitted": len(executed) + len(option_mr_executed),
         "gate_approved": len(approved),
         "predicted_ev_of_approved": predicted_ev,
     }

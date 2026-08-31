@@ -108,9 +108,10 @@ def propose(market_brief: str, feedback: str | None = None,
     return _extract_json(raw), raw
 
 
-STOCK_REVIEW_SCHEMA = """You are the event-risk reviewer for a PAPER stock trade.
-Deterministic Python has already computed the signal, indicators, quantity, and stop.
-You may not change those numbers or introduce another symbol. Review only the supplied
+OPTION_MR_REVIEW_SCHEMA = """You are the event-risk reviewer for a PAPER long-call
+options trade. Deterministic Python has already computed the underlying signal, exact
+OCC contract, quote, quantity, premium cap, and exit rules. You may not change those
+numbers, introduce another symbol, or propose a stock order. Review only the supplied
 Alpaca MCP news headlines/summaries. Do not claim that an earnings calendar was checked:
 the supplied source is a news feed, not an earnings calendar, and you have no verified
 search tool in this API call.
@@ -127,12 +128,12 @@ APPROVE. Respond with one JSON object and nothing else:
 """
 
 
-def review_stock_candidate(candidate_brief: str) -> tuple[dict | None, str]:
+def review_option_mr_candidate(candidate_brief: str) -> tuple[dict | None, str]:
     """One bounded AI review; calculations and order authority remain in Python."""
     payload = {
         "model": config.POE_MODEL,
         "messages": [
-            {"role": "system", "content": STOCK_REVIEW_SCHEMA},
+            {"role": "system", "content": OPTION_MR_REVIEW_SCHEMA},
             {"role": "user", "content": candidate_brief},
         ],
         "max_tokens": min(config.LLM_MAX_TOKENS, 2000),

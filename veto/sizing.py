@@ -24,6 +24,29 @@ KELLY_FRACTION = float(os.getenv("PACAPOUNCE_KELLY_FRACTION", "0.25"))
 MAX_EQUITY_AT_RISK = float(os.getenv("PACAPOUNCE_MAX_EQUITY_AT_RISK", "0.02"))
 
 
+def spread_budget(options_buying_power: float, equity: float,
+                  spread_equity_pct: float) -> float:
+    """Defined loss the credit-spread lane may carry, in dollars.
+
+    Full-buying-power sizing otherwise consumes the whole broker budget on the
+    first approved spread, leaving the 15:45 long-call lane unable to place an
+    order at all. The share is taken from equity rather than from remaining
+    buying power so a lane's budget does not depend on which lane filled first.
+    Live options buying power still bounds it: this is a ceiling, not a grant.
+    """
+    ceiling = max(equity, 0.0) * min(max(spread_equity_pct, 0.0), 1.0)
+    return min(max(options_buying_power, 0.0), ceiling)
+
+
+def option_mr_budget(options_buying_power: float, equity: float,
+                     total_premium_pct: float,
+                     deployed_premium: float = 0.0) -> float:
+    """Premium the long-call lane may still deploy, in dollars."""
+    ceiling = max(equity, 0.0) * min(max(total_premium_pct, 0.0), 1.0)
+    remaining = ceiling - max(deployed_premium, 0.0)
+    return max(min(max(options_buying_power, 0.0), remaining), 0.0)
+
+
 def buying_power_contracts(options_buying_power: float,
                            max_loss_per_contract: float,
                            utilization: float = 1.0,

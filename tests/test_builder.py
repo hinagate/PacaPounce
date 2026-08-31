@@ -27,13 +27,16 @@ def test_full_buying_power_sizes_from_rounded_executable_credit(monkeypatch):
             },
         }
     }
-    monkeypatch.setattr(builder.mcp_client, "call", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        builder.mcp_client, "call_all_pages", lambda *_args, **_kwargs: {}
+    )
     monkeypatch.setattr(builder.mcp_client, "run", lambda _call: chain)
     monkeypatch.setattr(builder, "realized_vol", lambda _symbol: 0.20)
     monkeypatch.setattr(builder, "vol_profile", lambda _symbol: {"ewma": 0.20})
     monkeypatch.setattr(builder.skew, "chain_is_sane", lambda *_args, **_kwargs: (True, ""))
     monkeypatch.setattr(builder.skew, "build_smile", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(config, "FULL_BUYING_POWER", True)
+    monkeypatch.setattr(config, "SPREAD_EQUITY_PCT", 0.95)
 
     intent = Intent(
         underlying="SPY",
@@ -62,6 +65,7 @@ def test_full_buying_power_sizes_from_rounded_executable_credit(monkeypatch):
     assert spread is not None
     assert spread["credit"] == 0.63
     assert spread["kelly"]["max_loss_per_contract"] == 337.0
-    assert spread["qty"] == 296
-    assert spread["kelly"]["total_risk"] == 99_752.0
+    # 95% of $100,000 equity, bounded by options BP: floor(95000 / 337).
+    assert spread["qty"] == 281
+    assert spread["kelly"]["total_risk"] == 94_697.0
     assert spread["kelly"]["total_risk"] <= 100_000.0
