@@ -1069,3 +1069,81 @@ def test_ratchet_evidence_is_safe_on_a_position_that_never_armed():
     # Still a complete set of keys, so the log schema does not change shape
     # depending on whether the ratchet happened to be involved.
     assert set(empty) == set(mr.ratchet_evidence({"armed": True}))
+
+
+def test_arm_threshold_asks_every_contract_for_the_same_underlying_move(monkeypatch):
+    """The point of the change. A share of premium asked GOOG for 0.50% and
+    INTC for 1.79% because their leverage differs 3x; an ATR multiple asks both
+    for the same fraction of their own typical daily range."""
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_ARM_ATR", 0.35)
+
+    # (name, spot, ATR14, delta, premium, qty) from the live positions.
+    contracts = [
+        ("GOOG 330C", 333.27, 5.90, 0.612, 6.80, 15),
+        ("GOOG 320C", 333.27, 5.90, 0.807, 18.50, 18),
+        ("INTC 85C", 86.44, 4.68, 0.586, 4.90, 21),
+        ("INTC 80C", 86.44, 4.68, 0.771, 8.15, 13),
+    ]
+    moves = []
+    for _name, spot, atr, delta, premium, qty in contracts:
+        threshold = mr.ratchet_arm_threshold(atr, delta, qty)
+        # Underlying move that produces that P&L, as a share of ATR.
+        move = threshold / (delta * qty * 100)
+        moves.append(move / atr)
+    assert all(abs(m - 0.35) < 1e-9 for m in moves), (
+        "every contract must arm on the same ATR multiple regardless of leverage"
+    )
+
+    # Under the old rule the same contracts demanded 0.27-0.58 ATR.
+    old_moves = []
+    for _name, spot, atr, delta, premium, qty in contracts:
+        old_threshold = 0.15 * premium * qty * 100
+        old_moves.append(old_threshold / (delta * qty * 100) / atr)
+    assert max(old_moves) / min(old_moves) > 2.0
+
+
+def test_todays_intc_exit_still_arms_under_the_atr_threshold(monkeypatch):
+    """Replay of the live 2026-09-01 INTC trades: entry near 87.0, peak 89.04.
+
+    The exit price is unaffected either way, because the floor is high-water
+    times one minus giveback and does not reference the arm threshold. What the
+    threshold decides is only whether anything was protected at all.
+    """
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_ARM_ATR", 0.35)
+    entry_spot, peak_spot, atr = 87.0, 89.04, 4.68
+    peak_move = peak_spot - entry_spot
+
+    for delta, premium, qty in ((0.586, 4.90, 21), (0.771, 8.15, 13)):
+        threshold = mr.ratchet_arm_threshold(atr, delta, qty)
+        peak_pnl = delta * peak_move * qty * 100
+        assert peak_pnl > threshold, "the live INTC peak must still arm"
+
+    # A half-ATR threshold would have been marginal on the same move, which is
+    # why 0.35 was chosen over the tidier 0.5.
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_ARM_ATR", 0.5)
+    tight = mr.ratchet_arm_threshold(atr, 0.586, 21)
+    assert 0.586 * peak_move * 21 * 100 < tight
+
+
+def test_arm_threshold_falls_back_to_premium_when_atr_is_unusable(monkeypatch):
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_ARM_PCT", 0.15)
+    assert mr.ratchet_arm_threshold(0.0, 0.6, 10) is None
+    assert mr.ratchet_arm_threshold(5.0, 0.0, 10) is None
+    assert mr.ratchet_arm_threshold(5.0, 0.6, 0) is None
+
+    # With no threshold supplied the ratchet uses the premium share instead.
+    state = mr.ratchet_update(None, PREMIUM * 0.16, PREMIUM, arm_threshold=None)
+    assert state["armed"], "the fallback must still protect the position"
+
+
+def test_an_explicit_arm_threshold_overrides_the_premium_share(monkeypatch):
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_ARM_PCT", 0.15)
+    # 16% of premium clears the old rule but not a threshold set above it.
+    high = mr.ratchet_update(None, PREMIUM * 0.16, PREMIUM,
+                             arm_threshold=PREMIUM * 0.30)
+    assert not high["armed"]
+    assert high["arm_threshold_pnl"] == round(PREMIUM * 0.30, 2)
+
+    low = mr.ratchet_update(None, PREMIUM * 0.16, PREMIUM,
+                            arm_threshold=PREMIUM * 0.05)
+    assert low["armed"]

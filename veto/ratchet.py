@@ -77,7 +77,7 @@ def _dispersion(history: list[float], mode: str) -> float:
 
 def update(*, pnl: float | None, denominator: float, history: list[float],
            breach_count: int, policy: Policy, quote_ready: bool = True,
-           high_water: float = 0.0) -> dict:
+           high_water: float = 0.0, arm_threshold: float | None = None) -> dict:
     """Advance one position's ratchet by a single executable mark.
 
     ``pnl`` is measured at the price the position could actually be closed at -
@@ -90,6 +90,12 @@ def update(*, pnl: float | None, denominator: float, history: list[float],
     recomputed because history is truncated to ``history_limit``: after a
     restart a lane may recover a full peak alongside only a recent tail, and
     rebuilding the peak from that tail would silently lower the floor.
+
+    ``arm_threshold`` overrides ``policy.arm_pct * denominator`` when the lane
+    can express "this has been right" in better units than a share of the
+    capital committed. A long option's P&L moves by its leverage, which varies
+    several-fold between contracts, so a fixed share of premium asks for a
+    different underlying move from each one.
     """
     series = [float(value) for value in history]
     if pnl is not None:
@@ -120,8 +126,10 @@ def update(*, pnl: float | None, denominator: float, history: list[float],
 
     scale = max(denominator, 0.01)
     peak = max(float(high_water), *series, 0.0)
-    arm_threshold = policy.arm_pct * scale
-    armed = peak >= arm_threshold
+    threshold = (
+        policy.arm_pct * scale if arm_threshold is None else max(arm_threshold, 0.0)
+    )
+    armed = peak >= threshold
 
     dispersion = _dispersion(series, policy.volatility_mode)
     volatility_ratio = dispersion / scale
@@ -148,7 +156,7 @@ def update(*, pnl: float | None, denominator: float, history: list[float],
     base.update({
         "armed": armed,
         "high_water_pnl": round(peak, 2),
-        "arm_threshold_pnl": round(arm_threshold, 2),
+        "arm_threshold_pnl": round(threshold, 2),
         "trailing_floor_pnl": round(trailing_floor, 2),
         "breach_count": breaches,
         "capture_pct": round(pnl / scale, 6),

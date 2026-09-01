@@ -235,6 +235,22 @@ OPTION_MR_PROFIT_EXIT_ENABLED = os.getenv(
 OPTION_MR_RATCHET_ENABLED = os.getenv(
     "PACAPOUNCE_OPTION_MR_RATCHET_ENABLED", "true"
 ).lower() in {"1", "true", "yes", "on"}
+# Arm on an ATR-normalised move of the UNDERLYING, not on a share of the
+# premium. "This position has been right" is a statement about the stock, and a
+# long call's P&L moves by its leverage - delta x spot / premium - which ranged
+# 8.4x to 29.9x across live positions. A single 15% of premium therefore asked
+# GOOG for 0.50% and INTC for 1.79%, i.e. 0.28 to 0.58 ATR: the same rule
+# meaning different things. Measured over 400 sessions on the 14-name universe,
+# a favourable 5-session excursion peaks near 2x ATR regardless of the name, so
+# arming at 0.35 ATR protects from roughly the first sixth of a typical move.
+# Symmetric with the 2x ATR stop, in the same units.
+OPTION_MR_RATCHET_ARM_ATR = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_RATCHET_ARM_ATR", "0.35")
+)
+if OPTION_MR_RATCHET_ARM_ATR <= 0:
+    raise ValueError("PACAPOUNCE_OPTION_MR_RATCHET_ARM_ATR must be positive")
+# Fallback when a position has no usable ATR or delta - an adopted position, or
+# a chain that returned no greeks. Never the primary path.
 OPTION_MR_RATCHET_ARM_PCT = float(
     os.getenv("PACAPOUNCE_OPTION_MR_RATCHET_ARM_PCT", "0.15")
 )

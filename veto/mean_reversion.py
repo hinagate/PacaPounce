@@ -282,8 +282,21 @@ def ratchet_evidence(state: dict | None) -> dict:
     }
 
 
+def ratchet_arm_threshold(atr: float, delta: float, qty: float) -> float | None:
+    """P&L that a 0.35x ATR favourable move in the underlying would produce.
+
+    The same first-order translation the position sizing uses for its stop
+    (2 x ATR x delta x 100), pointed the other way. Returns None when the
+    inputs are missing, so the caller falls back to a share of premium.
+    """
+    if atr <= 0 or delta <= 0 or qty <= 0:
+        return None
+    return config.OPTION_MR_RATCHET_ARM_ATR * atr * abs(delta) * qty * 100
+
+
 def ratchet_update(state: dict | None, executable_pnl: float | None,
-                   premium_paid: float, quote_ready: bool = True) -> dict:
+                   premium_paid: float, quote_ready: bool = True,
+                   arm_threshold: float | None = None) -> dict:
     """Advance the long call's profit ratchet by one executable mark."""
     previous = dict(state or {})
     if not config.OPTION_MR_RATCHET_ENABLED:
@@ -298,6 +311,7 @@ def ratchet_update(state: dict | None, executable_pnl: float | None,
         high_water=_f(previous.get("high_water_pnl")),
         policy=call_ratchet_policy(),
         quote_ready=quote_ready,
+        arm_threshold=arm_threshold,
     )
     return {
         "armed": result["armed"],
@@ -1380,6 +1394,9 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
         ratchet_state = ratchet_update(
             record.get("ratchet"), executable_pnl, avg_entry * qty * 100,
             quote_ready=bool(option_quote and option_quote.get("bid", 0) > 0),
+            arm_threshold=ratchet_arm_threshold(
+                _f(record.get("atr14")), _f(record.get("delta")), qty,
+            ),
         )
         record["ratchet"] = ratchet_state
 
