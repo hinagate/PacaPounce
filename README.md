@@ -223,6 +223,59 @@ dashboard discloses the active 100% allocation and its downside explicitly.
 Every sized position reports its full outcome distribution, not just its mean. A
 point estimate is close to useless when the spread of outcomes dwarfs it.
 
+### Why the long call is bought in-the-money
+
+The lane's delta band is 0.55-0.85 and the carry ranking pushes it to the top of
+that range: the GOOG call it actually bought on 2026-08-31 was 0.807 delta, 18
+DTE, with 82% of its premium already intrinsic. That is a choice, and it costs
+something real, so it is worth stating what it buys and what it gives up.
+
+Measured across the exact chain that trade came from — GOOG at 335.87, the
+2026-09-18 expiry, $33,300 deployed, held five sessions:
+
+| delta | strike | ask | extrinsic | needs | -5% | +5% | up/down |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0.917 | 310 | 28.05 | 8% | +0.63% | -19,143 | +16,405 | 0.86 |
+| **0.815** | **320** | **19.25** | **18%** | **+0.73%** | **-23,282** | **+21,899** | **0.94** |
+| 0.647 | 330 | 11.30 | 48% | +0.51% | -26,601 | +35,608 | 1.34 |
+| 0.491 | 338 | 7.45 | 100% | +0.98% | -28,802 | +41,040 | 1.43 |
+| 0.257 | 350 | 2.96 | 100% | +0.61% | -31,050 | +61,771 | **1.99** |
+
+**The out-of-the-money contracts have a better upside-to-downside ratio, and the
+lane does not buy them.** Three reasons, in order of weight.
+
+**1. The signal does not predict large moves.** Its measured mean is +0.795% per
+trade. An out-of-the-money call only pays when the move is big; buying it is
+buying convexity in a distribution the signal says nothing about. The +5% column
+is not a forecast — the signal has no claim on it. Paying 100% extrinsic for
+exposure to an outcome you cannot predict is buying a lottery ticket, not
+harvesting an edge.
+
+**2. The risk model is defined on the underlying, and only a high delta tracks
+it.** Position size comes from `2 x ATR14 x delta x 100`, and the stop is an
+underlying price. Both assume delta is roughly stable over the move being
+modelled. At 0.82 delta that holds. At 0.26 delta it does not: delta collapses
+as the trade goes against you, so the modelled loss at the stop understates the
+real one, and the stop stops being a meaningful control.
+
+**3. It has to survive being wrong.** At -5% the 0.82-delta call keeps 30% of the
+premium because most of it was intrinsic; the 0.26-delta call keeps 7%. Over a
+five-session window that runs a strategy at a third of the account, the
+difference between losing 70% and losing 93% of a position is the difference
+between a bad day and a structural one.
+
+What it gives up is real and unhedged: at +5% the traded contract makes $21,899
+where a 0.26-delta call would have made $61,771. If the objective were purely
+to maximise the right tail with no regard for the risk model, out-of-the-money
+would win. The lane is not configured that way, and the honest reason is that
+its edge is a small mean reversion, not a large move.
+
+One caveat on the `needs` column: it is a delta-linear estimate of the move
+required to cover crossing plus theta, so it understates what a low-delta
+contract really needs. Gamma flatters it on the way up and punishes it on the
+way down, and neither shows in a first-order number. The carry gate is therefore
+not what excludes out-of-the-money contracts — the delta band is.
+
 ## Tournament mode: a different objective, stated as one
 
 Everything above maximizes **expected value**. The competition does not score
@@ -338,7 +391,7 @@ dishonest label.
         |                       negative limit_price = credit
         v
   Verdict ledger ............. every proposal, approved and rejected,
-                               append-only, with the gate version hash
+                               append-only, stamped with the gate version
 
   options MR lane (10:00,15:45)  SIP D1 + completed 15m bars -> SMA/RSI/ATR/EMA
         |                       one top underlying; options capital must be clear
