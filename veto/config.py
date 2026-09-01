@@ -219,6 +219,55 @@ OPTION_MR_MAX_HOLD_SESSIONS = int(
 OPTION_MR_PROFIT_EXIT_ENABLED = os.getenv(
     "PACAPOUNCE_OPTION_MR_PROFIT_EXIT_ENABLED", "true"
 ).lower() in {"1", "true", "yes", "on"}
+
+# Profit ratchet for the long-call lane. Being wrong about direction is a
+# probability outcome and the 2xATR stop already bounds it. Being RIGHT and
+# ending flat is not a probability outcome, it is a missing control: the lane
+# earned the move it was bought for and then handed it back. The ratchet exists
+# for that case only.
+#
+# Once a position has captured ARM_PCT of the premium paid, its executable
+# high-water mark is trailed by GIVEBACK_PCT of the gain. Because arming
+# requires a positive capture, the trailing floor is always above breakeven -
+# the invariant is asserted explicitly so no configuration can break it.
+# Elevated P&L volatility tightens the trail rather than closing by itself, and
+# a close needs CONFIRMATIONS consecutive breaches so one bad quote cannot exit.
+OPTION_MR_RATCHET_ENABLED = os.getenv(
+    "PACAPOUNCE_OPTION_MR_RATCHET_ENABLED", "true"
+).lower() in {"1", "true", "yes", "on"}
+OPTION_MR_RATCHET_ARM_PCT = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_RATCHET_ARM_PCT", "0.15")
+)
+OPTION_MR_RATCHET_GIVEBACK_PCT = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_RATCHET_GIVEBACK_PCT", "0.40")
+)
+OPTION_MR_RATCHET_HIGH_VOL_GIVEBACK_PCT = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_RATCHET_HIGH_VOL_GIVEBACK_PCT", "0.25")
+)
+OPTION_MR_RATCHET_CONFIRMATIONS = int(
+    os.getenv("PACAPOUNCE_OPTION_MR_RATCHET_CONFIRMATIONS", "2")
+)
+OPTION_MR_RATCHET_VOL_SAMPLES = int(
+    os.getenv("PACAPOUNCE_OPTION_MR_RATCHET_VOL_SAMPLES", "10")
+)
+OPTION_MR_RATCHET_HIGH_VOL_PCT = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_RATCHET_HIGH_VOL_PCT", "0.03")
+)
+if OPTION_MR_RATCHET_ARM_PCT <= 0:
+    raise ValueError("PACAPOUNCE_OPTION_MR_RATCHET_ARM_PCT must be positive")
+for _name, _value in (
+    ("GIVEBACK", OPTION_MR_RATCHET_GIVEBACK_PCT),
+    ("HIGH_VOL_GIVEBACK", OPTION_MR_RATCHET_HIGH_VOL_GIVEBACK_PCT),
+):
+    if not 0 < _value < 1:
+        raise ValueError(
+            f"PACAPOUNCE_OPTION_MR_RATCHET_{_name}_PCT must be in (0, 1); a value "
+            "of 1 or more would let a protected position fall back into a loss"
+        )
+if OPTION_MR_RATCHET_HIGH_VOL_GIVEBACK_PCT > OPTION_MR_RATCHET_GIVEBACK_PCT:
+    raise ValueError("the high-volatility giveback must tighten the trail, not loosen it")
+if OPTION_MR_RATCHET_CONFIRMATIONS < 1 or OPTION_MR_RATCHET_VOL_SAMPLES < 2:
+    raise ValueError("ratchet confirmations >= 1 and volatility samples >= 2")
 OPTION_MR_DECISION_MINUTE = int(
     os.getenv("PACAPOUNCE_OPTION_MR_DECISION_MINUTE", "45")
 )

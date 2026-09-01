@@ -117,8 +117,23 @@ everything and the second strategy was structurally unable to place an order.
 - `get_orders` must confirm the client ID and Alpaca broker order ID before
   SUBMITTED is recorded.
 - The 30-second monitor sends a `sell_to_close` limit at the live bid when the
-  underlying hits its 2×ATR stop, recovers above EMA5 at the last window, or reaches the
-  third normal session. The LLM never selects the contract, size, or exit.
+  underlying hits its 2×ATR stop, when the profit ratchet trips, or when the
+  holding-session limit is reached. The LLM never selects the contract, size,
+  or exit.
+- **The ratchet exists for one failure mode.** Being wrong about direction is a
+  probability outcome, and the 2×ATR stop already bounds it. Being *right* and
+  ending flat is not a probability outcome — it is a missing control, and under
+  a tail-seeking objective with no profit target it is the likeliest way to
+  waste a correct call. After a position captures 15% of the premium paid, its
+  executable high-water mark is trailed by 40% of the gain, tightened to 25%
+  when P&L volatility is elevated, and closed after two consecutive breaches so
+  one bad quote cannot exit. Because arming requires a positive capture and the
+  giveback is below 1, **an armed floor is always above breakeven**; the code
+  clamps it at zero as well so no configuration can break that. The trail is
+  measured at the live bid, not the midpoint, so the floor is a number the
+  position can actually realise. It cannot defend against a gap through the
+  floor, and the two-confirmation requirement means the close lags the floor by
+  two observations — both are bounded costs of not exiting on a single tick.
 - LLM sees the top numeric candidate plus timestamped Alpaca `get_news` output.
   It may veto a concrete news/event risk and writes the thesis. `get_news` is
   **not** presented as a verified earnings calendar; this limitation remains

@@ -23,7 +23,7 @@ import time
 import uuid
 from datetime import date, datetime, time as wall_time, timedelta, timezone
 from pathlib import Path
-from statistics import fmean
+from statistics import fmean, pstdev
 from zoneinfo import ZoneInfo
 
 from . import config, llm, mcp_client, sizing as sizing_mod
@@ -239,6 +239,71 @@ def option_position_size(equity: float, options_buying_power: float,
     if discrete_one_contract:
         qty = 1
     return {**base, "contracts": qty, "discrete_one_contract": discrete_one_contract}
+
+
+def ratchet_update(state: dict | None, executable_pnl: float | None,
+                   premium_paid: float) -> dict:
+    """Trail a long call's executable high-water mark once it is in profit.
+
+    ``executable_pnl`` is measured at the live bid, so it is what closing now
+    would actually realise, not a midpoint mark. The floor is expressed in the
+    same units, which is what makes the guarantee meaningful: once armed, the
+    position cannot be given back to a loss.
+    """
+    ratchet = dict(state or {})
+    ratchet.setdefault("armed", False)
+    ratchet.setdefault("high_water_pnl", 0.0)
+    ratchet.setdefault("breaches", 0)
+    ratchet.setdefault("samples", [])
+    ratchet["close"] = False
+    ratchet["reason"] = None
+    if not config.OPTION_MR_RATCHET_ENABLED:
+        return ratchet
+    if executable_pnl is None or premium_paid <= 0:
+        return ratchet
+
+    samples = [*ratchet["samples"], round(float(executable_pnl), 2)]
+    ratchet["samples"] = samples[-config.OPTION_MR_RATCHET_VOL_SAMPLES:]
+    capture = executable_pnl / premium_paid
+    ratchet["capture_pct"] = round(capture, 6)
+
+    if not ratchet["armed"]:
+        if capture < config.OPTION_MR_RATCHET_ARM_PCT:
+            return ratchet
+        ratchet["armed"] = True
+        ratchet["armed_at_pnl"] = round(float(executable_pnl), 2)
+
+    ratchet["high_water_pnl"] = round(
+        max(_f(ratchet["high_water_pnl"]), float(executable_pnl)), 2
+    )
+
+    volatility = 0.0
+    if len(ratchet["samples"]) >= 2:
+        volatility = pstdev(ratchet["samples"]) / premium_paid
+    high_vol = volatility > config.OPTION_MR_RATCHET_HIGH_VOL_PCT
+    giveback = (
+        config.OPTION_MR_RATCHET_HIGH_VOL_GIVEBACK_PCT if high_vol
+        else config.OPTION_MR_RATCHET_GIVEBACK_PCT
+    )
+    # The invariant: a position that has been right does not become a loss.
+    # Arming needs a positive capture and the giveback is below 1, so the trail
+    # is already above breakeven; the clamp states that rather than assuming it.
+    floor = max(ratchet["high_water_pnl"] * (1.0 - giveback), 0.0)
+    ratchet.update({
+        "pnl_volatility": round(volatility, 6),
+        "high_volatility": high_vol,
+        "giveback_pct": giveback,
+        "floor_pnl": round(floor, 2),
+    })
+
+    if executable_pnl < floor:
+        ratchet["breaches"] = int(ratchet["breaches"]) + 1
+    else:
+        ratchet["breaches"] = 0
+    if ratchet["breaches"] >= config.OPTION_MR_RATCHET_CONFIRMATIONS:
+        ratchet["close"] = True
+        ratchet["reason"] = "profit_ratchet"
+    return ratchet
 
 
 def carry_to_break_even(ask: float, bid: float, spot: float, strike: float,
@@ -1274,8 +1339,21 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
         signal = None
         held_sessions = None
 
+        broker_position = positions[contract_symbol]
+        avg_entry = _f(broker_position.get("avg_entry_price"))
+        qty = abs(_f(broker_position.get("qty")))
+        executable_pnl = None
+        if option_quote and avg_entry > 0 and qty > 0:
+            executable_pnl = round((option_quote["bid"] - avg_entry) * qty * 100, 2)
+        ratchet = ratchet_update(
+            record.get("ratchet"), executable_pnl, avg_entry * qty * 100,
+        )
+        record["ratchet"] = ratchet
+
         if spot > 0 and spot <= _f(record.get("underlying_stop")):
             reason = "underlying_stop"
+        elif ratchet.get("close"):
+            reason = ratchet["reason"]
         elif normal_window and record.get("last_exit_check_date") != now_et.date().isoformat():
             signals, errors = fetch_signals([underlying], now_et)
             signal = signals[0] if signals else None
@@ -1295,16 +1373,14 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
                 "held_sessions": held_sessions, "reason": reason,
             }
 
-        broker_position = positions[contract_symbol]
-        avg_entry = _f(broker_position.get("avg_entry_price"))
-        qty = abs(_f(broker_position.get("qty")))
-        executable_pnl = None
-        if option_quote and avg_entry > 0 and qty > 0:
-            executable_pnl = round((option_quote["bid"] - avg_entry) * qty * 100, 2)
         record["last_mark"] = {
             "at": now_et.isoformat(), "underlying_price": round(spot, 4),
             "option_bid": (round(option_quote["bid"], 4) if option_quote else None),
             "executable_pnl": executable_pnl,
+            "capture_pct": ratchet.get("capture_pct"),
+            "ratchet_armed": ratchet.get("armed"),
+            "ratchet_high_water": ratchet.get("high_water_pnl"),
+            "ratchet_floor": ratchet.get("floor_pnl"),
         }
 
         if not reason:

@@ -810,3 +810,142 @@ def test_transient_retry_is_measured_from_the_open_window(monkeypatch):
     assert not mr._transient_retry_allowed(_snapshot(day.replace(hour=10, minute=9)), "10:00")
     # The afternoon window gets its own clock, not the morning one's.
     assert mr._transient_retry_allowed(_snapshot(day.replace(hour=15, minute=50)), "15:45")
+
+
+PREMIUM = 33_300.0  # the GOOG position the lane actually opened
+
+
+def _run_ratchet(pnls, monkeypatch, **overrides):
+    """Feed a P&L path through the ratchet and return every state it produced."""
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_ENABLED", True)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_ARM_PCT", 0.15)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_GIVEBACK_PCT", 0.40)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_HIGH_VOL_GIVEBACK_PCT", 0.25)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_CONFIRMATIONS", 2)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_VOL_SAMPLES", 10)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_HIGH_VOL_PCT", 0.03)
+    for key, value in overrides.items():
+        monkeypatch.setattr(mr.config, key, value)
+    state, out = None, []
+    for pnl in pnls:
+        state = mr.ratchet_update(state, pnl, PREMIUM)
+        out.append(dict(state))
+        if state["close"]:
+            break
+    return out
+
+
+def test_ratchet_stays_disarmed_below_the_capture_threshold(monkeypatch):
+    # 14% of premium is not enough to arm; nothing is protected yet.
+    states = _run_ratchet([0.0, 1000.0, PREMIUM * 0.14], monkeypatch)
+    assert not any(s["armed"] for s in states)
+    assert not any(s["close"] for s in states)
+    assert all(s.get("floor_pnl") is None for s in states)
+
+
+def test_ratchet_arms_and_trails_the_executable_high_water(monkeypatch):
+    states = _run_ratchet(
+        [PREMIUM * 0.20, PREMIUM * 0.50, PREMIUM * 0.45], monkeypatch,
+        OPTION_MR_RATCHET_HIGH_VOL_PCT=9.9,  # isolate from the volatility tightening
+    )
+    assert states[0]["armed"]
+    # The floor follows the best executable mark, never the current one.
+    assert states[1]["high_water_pnl"] == round(PREMIUM * 0.50, 2)
+    assert states[2]["high_water_pnl"] == round(PREMIUM * 0.50, 2)
+    assert states[2]["floor_pnl"] == round(PREMIUM * 0.50 * 0.60, 2)
+    assert not states[2]["close"]  # 45% is still above the 30% floor
+
+
+def test_ratchet_needs_consecutive_breaches_so_one_bad_quote_cannot_exit(monkeypatch):
+    # Up 50%, one spike down through the floor, then back above it.
+    states = _run_ratchet(
+        [PREMIUM * 0.50, PREMIUM * 0.10, PREMIUM * 0.45], monkeypatch,
+        OPTION_MR_RATCHET_HIGH_VOL_PCT=9.9,
+    )
+    assert states[1]["breaches"] == 1 and not states[1]["close"]
+    assert states[2]["breaches"] == 0, "recovering above the floor must reset"
+    assert not any(s["close"] for s in states)
+
+
+def test_ratchet_closes_after_sustained_giveback(monkeypatch):
+    states = _run_ratchet(
+        [PREMIUM * 0.50, PREMIUM * 0.10, PREMIUM * 0.10], monkeypatch,
+        OPTION_MR_RATCHET_HIGH_VOL_PCT=9.9,
+    )
+    assert states[-1]["close"]
+    assert states[-1]["reason"] == "profit_ratchet"
+
+
+def test_elevated_volatility_tightens_the_trail_without_closing_by_itself(monkeypatch):
+    calm = _run_ratchet(
+        [PREMIUM * 0.50, PREMIUM * 0.50], monkeypatch,
+        OPTION_MR_RATCHET_HIGH_VOL_PCT=9.9,
+    )
+    choppy = _run_ratchet(
+        [PREMIUM * 0.50, PREMIUM * 0.20, PREMIUM * 0.50], monkeypatch,
+        OPTION_MR_RATCHET_HIGH_VOL_PCT=0.001,
+    )
+    assert calm[-1]["giveback_pct"] == 0.40
+    assert choppy[-1]["giveback_pct"] == 0.25
+    assert choppy[-1]["floor_pnl"] > calm[-1]["floor_pnl"], "volatility tightens"
+    # Volatility alone never closes a position sitting at its high-water mark.
+    assert not choppy[-1]["close"]
+
+
+def test_a_position_that_was_right_is_never_left_unprotected(monkeypatch):
+    """The requirement: being wrong is probability, being right and ending flat
+    is a system error. Once armed, the floor is never at or below breakeven."""
+    import random
+
+    rng = random.Random(11)
+    armed_paths = 0
+    for _ in range(400):
+        pnl, path = 0.0, []
+        for _ in range(40):
+            pnl += rng.gauss(0, 0.06) * PREMIUM
+            path.append(round(pnl, 2))
+        states = _run_ratchet(path, monkeypatch)
+        for state in states:
+            if not state["armed"]:
+                continue
+            armed_paths += 1
+            # The invariant, checked on every armed observation.
+            assert state["high_water_pnl"] > 0
+            assert state["floor_pnl"] > 0, "an armed floor may never sit at a loss"
+    assert armed_paths > 100, "the paths must actually exercise the armed branch"
+
+
+def test_a_smooth_giveback_is_closed_while_still_in_profit(monkeypatch):
+    """Without a gap, the ratchet realises a gain rather than a round trip."""
+    peak = PREMIUM * 0.60
+    path = [PREMIUM * 0.20, peak]
+    value = peak
+    while value > -PREMIUM * 0.5:          # bleed down smoothly
+        value -= PREMIUM * 0.02
+        path.append(round(value, 2))
+
+    states = _run_ratchet(path, monkeypatch, OPTION_MR_RATCHET_HIGH_VOL_PCT=9.9)
+
+    assert states[-1]["close"]
+    exit_pnl = states[-1]["samples"][-1]
+    assert exit_pnl > 0, "a smooth decline must be closed before it becomes a loss"
+    # Requiring two confirmations means the close necessarily lags the floor by
+    # that many observations. That lag is the cost of not exiting on one bad
+    # quote, and it is bounded rather than open-ended.
+    lag = config.OPTION_MR_RATCHET_CONFIRMATIONS * PREMIUM * 0.02
+    assert exit_pnl >= states[-1]["floor_pnl"] - lag
+
+
+def test_ratchet_can_be_switched_off(monkeypatch):
+    states = _run_ratchet(
+        [PREMIUM * 0.80, 0.0, 0.0, 0.0], monkeypatch,
+        OPTION_MR_RATCHET_ENABLED=False,
+    )
+    assert not any(s["close"] for s in states)
+    assert not any(s["armed"] for s in states)
+
+
+def test_ratchet_ignores_an_unusable_mark(monkeypatch):
+    states = _run_ratchet([None, None], monkeypatch)
+    assert not any(s["close"] or s["armed"] for s in states)
+    assert mr.ratchet_update(None, 5_000.0, 0.0)["close"] is False
