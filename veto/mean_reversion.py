@@ -259,6 +259,29 @@ def call_ratchet_policy() -> ratchet.Policy:
     )
 
 
+def ratchet_evidence(state: dict | None) -> dict:
+    """The numbers that decided an exit, flattened for the audit log.
+
+    A ``profit_ratchet`` reason on its own is unreviewable: it says a trail was
+    breached without saying where the trail was, what it was trailing, or why it
+    was that tight. Those are the only things that make the decision checkable
+    after the fact, and the judge dashboard reads this log.
+    """
+    ratchet = state or {}
+    return {
+        "ratchet_armed": ratchet.get("armed"),
+        "ratchet_high_water_pnl": ratchet.get("high_water_pnl"),
+        "ratchet_arm_threshold_pnl": ratchet.get("arm_threshold_pnl"),
+        "ratchet_floor_pnl": ratchet.get("floor_pnl"),
+        "ratchet_giveback_pct": ratchet.get("giveback_pct"),
+        "ratchet_breaches": ratchet.get("breaches"),
+        "ratchet_capture_pct": ratchet.get("capture_pct"),
+        "pnl_volatility_ratio": ratchet.get("pnl_volatility"),
+        "pnl_volatility_high": ratchet.get("high_volatility"),
+        "pnl_slope_nonpositive": ratchet.get("slope_nonpositive"),
+    }
+
+
 def ratchet_update(state: dict | None, executable_pnl: float | None,
                    premium_paid: float, quote_ready: bool = True) -> dict:
     """Advance the long call's profit ratchet by one executable mark."""
@@ -1270,12 +1293,25 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
                 ))
         elif not broker_position and status in {"open", "exit_pending"}:
             record.update({"status": "closed", "closed_at": now_et.isoformat()})
+            # The terminal record for this position. It has to stand alone:
+            # everything needed to review the exit, including the entry it is
+            # being measured against and the trail that triggered it.
+            entry_premium = _f(record.get("entry_limit")) * _f(record.get("qty")) * 100
             event = log(
                 "position_closed", contract_symbol=contract_symbol,
                 underlying=record.get("underlying"),
                 reason=record.get("exit_reason") or "broker_or_manual_close",
                 entry_client_order_id=record.get("entry_client_order_id"),
                 exit_client_order_id=record.get("exit_client_order_id"),
+                qty=record.get("qty"),
+                entry_limit=record.get("entry_limit"),
+                entry_premium=round(entry_premium, 2),
+                exit_limit=record.get("exit_limit"),
+                exit_trigger_pnl=record.get("exit_trigger_pnl"),
+                underlying_stop=record.get("underlying_stop"),
+                signal_date=record.get("signal_date"),
+                adopted=record.get("adopted"),
+                **ratchet_evidence(record.get("ratchet")),
             )
             state["last_exit"] = event
             events.append(event)
@@ -1387,6 +1423,7 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
                     "exit_hold", contract_symbol=contract_symbol, underlying=underlying,
                     price=signal["price"], ema5=signal["ema5"],
                     held_sessions=held_sessions, executable_pnl=executable_pnl,
+                    **ratchet_evidence(record.get("ratchet")),
                 ))
             continue
         if _pending_close(contract_symbol, open_orders):
@@ -1405,6 +1442,8 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
             events.append(log(
                 "exit_would_submit", contract_symbol=contract_symbol,
                 underlying=underlying, reason=reason, executable_pnl=executable_pnl,
+                underlying_price=round(spot, 4),
+                **ratchet_evidence(record.get("ratchet")),
             ))
             continue
 
@@ -1441,6 +1480,9 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
             underlying=underlying, reason=reason, qty=qty,
             limit_price=exit_limit, executable_pnl=executable_pnl,
             client_order_id=client_order_id, broker_order_id=broker_order.get("id"),
+            underlying_price=round(spot, 4),
+            underlying_stop=_f(record.get("underlying_stop")),
+            **ratchet_evidence(record.get("ratchet")),
         ))
 
     save_state(state)

@@ -1018,3 +1018,54 @@ def test_ratchet_ignores_an_unusable_mark(monkeypatch):
     states = _run_ratchet([None, None], monkeypatch)
     assert not any(s["close"] or s["armed"] for s in states)
     assert mr.ratchet_update(None, 5_000.0, 0.0)["close"] is False
+
+
+def test_ratchet_evidence_carries_the_numbers_that_decided_the_exit(monkeypatch):
+    """A "profit_ratchet" reason on its own is unreviewable: it says a trail was
+    breached without saying where it was or why it was that tight."""
+    states = _run_ratchet(
+        [PREMIUM * 0.50, PREMIUM * 0.48, PREMIUM * 0.10, PREMIUM * 0.10],
+        monkeypatch, OPTION_MR_RATCHET_HIGH_VOL_PCT=9.9,
+    )
+    assert states[-1]["close"]
+
+    evidence = mr.ratchet_evidence(states[-1])
+
+    # The whole decision is reconstructable: what the peak was, where that put
+    # the floor, why the floor was that far down, and how many breaches it took.
+    assert evidence["ratchet_armed"] is True
+    assert evidence["ratchet_high_water_pnl"] == round(PREMIUM * 0.50, 2)
+    assert evidence["ratchet_floor_pnl"] == round(PREMIUM * 0.50 * 0.60, 2)
+    assert evidence["ratchet_giveback_pct"] == 0.40
+    assert evidence["ratchet_breaches"] == config.OPTION_MR_RATCHET_CONFIRMATIONS
+    assert evidence["pnl_volatility_high"] is False
+    # And the floor is checkable against the giveback rather than asserted.
+    assert evidence["ratchet_floor_pnl"] == round(
+        evidence["ratchet_high_water_pnl"] * (1 - evidence["ratchet_giveback_pct"]), 2
+    )
+
+
+def test_ratchet_evidence_records_the_tightened_trail_on_a_volatile_position(monkeypatch):
+    """The 25% trail that closed both INTC positions could only be inferred by
+    arithmetic before; it is now stated."""
+    states = _run_ratchet(
+        [PREMIUM * 0.50, PREMIUM * 0.20, PREMIUM * 0.50], monkeypatch,
+        OPTION_MR_RATCHET_HIGH_VOL_PCT=0.001,
+    )
+    evidence = mr.ratchet_evidence(states[-1])
+
+    assert evidence["pnl_volatility_high"] is True
+    assert evidence["ratchet_giveback_pct"] == 0.25
+    assert evidence["pnl_volatility_ratio"] > 0
+    assert evidence["ratchet_floor_pnl"] > round(PREMIUM * 0.50 * 0.60, 2), (
+        "a volatile position must be trailed tighter than the calm default"
+    )
+
+
+def test_ratchet_evidence_is_safe_on_a_position_that_never_armed():
+    empty = mr.ratchet_evidence(None)
+    assert empty["ratchet_armed"] is None
+    assert empty["ratchet_floor_pnl"] is None
+    # Still a complete set of keys, so the log schema does not change shape
+    # depending on whether the ratchet happened to be involved.
+    assert set(empty) == set(mr.ratchet_evidence({"armed": True}))
