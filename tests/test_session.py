@@ -536,6 +536,11 @@ def test_entry_target_lock_keeps_bundled_monitor_until_market_close(monkeypatch)
             raise KeyboardInterrupt
 
     monkeypatch.setattr(app.session, "capture", capture)
+    # This test drives the real autonomous_loop, which calls maybe_enter before
+    # it checks anything else. With a fabricated timestamp inside a configured
+    # decision window that reached the live chain and placed real orders on the
+    # judged account. The loop's entry lane is not what is under test here.
+    monkeypatch.setattr(app.mean_reversion, "maybe_enter", lambda _snapshot: None)
     monkeypatch.setattr(
         app, "_ensure_monitor", lambda process: events.append("monitor") or monitor_token,
     )
@@ -598,6 +603,10 @@ def test_full_capital_lock_keeps_monitor_and_skips_entry_cycle(monkeypatch):
             raise KeyboardInterrupt
 
     monkeypatch.setattr(app.session, "capture", capture)
+    # Same hazard as the sibling test: autonomous_loop calls maybe_enter before
+    # any other branch, and this one only avoids the live chain by virtue of its
+    # timestamps missing a decision window. Do not leave that to chance.
+    monkeypatch.setattr(app.mean_reversion, "maybe_enter", lambda _snapshot: None)
     monkeypatch.setattr(
         app, "_ensure_monitor", lambda process: events.append("monitor") or monitor_token,
     )
