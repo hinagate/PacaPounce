@@ -155,9 +155,9 @@ def test_dashboard_contains_ai_intent_and_ordered_gate_catalog(tmp_path, monkeyp
     assert "How AI intelligence becomes a paper trade" in html
     assert "Proposes freely, trades only what survives" in html
     assert "Signal, not retry noise" in html
-    assert build_dashboard.config.VERDICT_LOG.relative_to(
-        build_dashboard.ROOT
-    ).as_posix() in html
+    # The ledger link points at wherever the ledger actually is: repo-relative
+    # in production, absolute when a test redirects it out of the repository.
+    assert build_dashboard.config.VERDICT_LOG.name in html
     assert 'class="funnel"' in html
     assert "forecast hold up?" in html
     assert "AI thesis evidence" in html

@@ -634,7 +634,11 @@ def build(live: bool = True, output: Path | None = None) -> Path:
     mr_validation = load_mr_validation()
     mr_oos = mr_validation.get("underlying_signal_oos_2024") or {}
     built_at = datetime.now(ZoneInfo("America/New_York")).isoformat(timespec="seconds")
-    audit_rel = config.VERDICT_LOG.relative_to(ROOT).as_posix()
+    try:
+        audit_rel = config.VERDICT_LOG.relative_to(ROOT).as_posix()
+    except ValueError:
+        # The ledger can be pointed outside the repository; link it as-is.
+        audit_rel = config.VERDICT_LOG.as_posix()
     audit_href = "../" + audit_rel
 
     rows = [{"n": i, "label": label(r),
