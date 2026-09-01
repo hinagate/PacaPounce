@@ -23,10 +23,10 @@ import time
 import uuid
 from datetime import date, datetime, time as wall_time, timedelta, timezone
 from pathlib import Path
-from statistics import fmean, pstdev
+from statistics import fmean
 from zoneinfo import ZoneInfo
 
-from . import config, llm, mcp_client, sizing as sizing_mod
+from . import config, llm, mcp_client, ratchet, sizing as sizing_mod
 
 ET = ZoneInfo("America/New_York")
 ENTRY_PREFIX = "paca-callmr-open-"
@@ -241,69 +241,56 @@ def option_position_size(equity: float, options_buying_power: float,
     return {**base, "contracts": qty, "discrete_one_contract": discrete_one_contract}
 
 
-def ratchet_update(state: dict | None, executable_pnl: float | None,
-                   premium_paid: float) -> dict:
-    """Trail a long call's executable high-water mark once it is in profit.
+def call_ratchet_policy() -> ratchet.Policy:
+    """Long-call thresholds, measured against the premium paid.
 
-    ``executable_pnl`` is measured at the live bid, so it is what closing now
-    would actually realise, not a midpoint mark. The floor is expressed in the
-    same units, which is what makes the guarantee meaningful: once armed, the
-    position cannot be given back to a loss.
+    A long call's P&L swings with delta rather than grinding, so the dispersion
+    of its levels is what identifies a fast tape. Its giveback is looser than a
+    spread's for the same reason: the same underlying move moves it much further.
     """
-    ratchet = dict(state or {})
-    ratchet.setdefault("armed", False)
-    ratchet.setdefault("high_water_pnl", 0.0)
-    ratchet.setdefault("breaches", 0)
-    ratchet.setdefault("samples", [])
-    ratchet["close"] = False
-    ratchet["reason"] = None
+    return ratchet.Policy(
+        arm_pct=config.OPTION_MR_RATCHET_ARM_PCT,
+        giveback_pct=config.OPTION_MR_RATCHET_GIVEBACK_PCT,
+        high_vol_giveback_pct=config.OPTION_MR_RATCHET_HIGH_VOL_GIVEBACK_PCT,
+        high_vol_pct=config.OPTION_MR_RATCHET_HIGH_VOL_PCT,
+        confirmations=config.OPTION_MR_RATCHET_CONFIRMATIONS,
+        history_limit=max(config.OPTION_MR_RATCHET_VOL_SAMPLES, 3),
+        volatility_mode="levels",
+    )
+
+
+def ratchet_update(state: dict | None, executable_pnl: float | None,
+                   premium_paid: float, quote_ready: bool = True) -> dict:
+    """Advance the long call's profit ratchet by one executable mark."""
+    previous = dict(state or {})
     if not config.OPTION_MR_RATCHET_ENABLED:
-        return ratchet
-    if executable_pnl is None or premium_paid <= 0:
-        return ratchet
-
-    samples = [*ratchet["samples"], round(float(executable_pnl), 2)]
-    ratchet["samples"] = samples[-config.OPTION_MR_RATCHET_VOL_SAMPLES:]
-    capture = executable_pnl / premium_paid
-    ratchet["capture_pct"] = round(capture, 6)
-
-    if not ratchet["armed"]:
-        if capture < config.OPTION_MR_RATCHET_ARM_PCT:
-            return ratchet
-        ratchet["armed"] = True
-        ratchet["armed_at_pnl"] = round(float(executable_pnl), 2)
-
-    ratchet["high_water_pnl"] = round(
-        max(_f(ratchet["high_water_pnl"]), float(executable_pnl)), 2
+        return {**previous, "close": False, "reason": None,
+                "armed": bool(previous.get("armed")),
+                "samples": list(previous.get("samples") or [])}
+    result = ratchet.update(
+        pnl=executable_pnl,
+        denominator=premium_paid,
+        history=previous.get("samples") or [],
+        breach_count=int(previous.get("breaches") or 0),
+        high_water=_f(previous.get("high_water_pnl")),
+        policy=call_ratchet_policy(),
+        quote_ready=quote_ready,
     )
-
-    volatility = 0.0
-    if len(ratchet["samples"]) >= 2:
-        volatility = pstdev(ratchet["samples"]) / premium_paid
-    high_vol = volatility > config.OPTION_MR_RATCHET_HIGH_VOL_PCT
-    giveback = (
-        config.OPTION_MR_RATCHET_HIGH_VOL_GIVEBACK_PCT if high_vol
-        else config.OPTION_MR_RATCHET_GIVEBACK_PCT
-    )
-    # The invariant: a position that has been right does not become a loss.
-    # Arming needs a positive capture and the giveback is below 1, so the trail
-    # is already above breakeven; the clamp states that rather than assuming it.
-    floor = max(ratchet["high_water_pnl"] * (1.0 - giveback), 0.0)
-    ratchet.update({
-        "pnl_volatility": round(volatility, 6),
-        "high_volatility": high_vol,
-        "giveback_pct": giveback,
-        "floor_pnl": round(floor, 2),
-    })
-
-    if executable_pnl < floor:
-        ratchet["breaches"] = int(ratchet["breaches"]) + 1
-    else:
-        ratchet["breaches"] = 0
-    if ratchet["breaches"] >= config.OPTION_MR_RATCHET_CONFIRMATIONS:
-        ratchet["close"] = True
-        ratchet["reason"] = "profit_ratchet"
-    return ratchet
+    return {
+        "armed": result["armed"],
+        "samples": result["history"],
+        "high_water_pnl": result["high_water_pnl"],
+        "arm_threshold_pnl": result["arm_threshold_pnl"],
+        "floor_pnl": result["trailing_floor_pnl"] if result["armed"] else None,
+        "breaches": result["breach_count"],
+        "capture_pct": result.get("capture_pct"),
+        "giveback_pct": result["giveback_pct"],
+        "pnl_volatility": result["volatility_ratio"],
+        "high_volatility": result["high_volatility"],
+        "slope_nonpositive": result["slope_nonpositive"],
+        "close": result["close"],
+        "reason": result["reason"],
+    }
 
 
 def carry_to_break_even(ask: float, bid: float, spot: float, strike: float,
@@ -1345,15 +1332,16 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
         executable_pnl = None
         if option_quote and avg_entry > 0 and qty > 0:
             executable_pnl = round((option_quote["bid"] - avg_entry) * qty * 100, 2)
-        ratchet = ratchet_update(
+        ratchet_state = ratchet_update(
             record.get("ratchet"), executable_pnl, avg_entry * qty * 100,
+            quote_ready=bool(option_quote and option_quote.get("bid", 0) > 0),
         )
-        record["ratchet"] = ratchet
+        record["ratchet"] = ratchet_state
 
         if spot > 0 and spot <= _f(record.get("underlying_stop")):
             reason = "underlying_stop"
-        elif ratchet.get("close"):
-            reason = ratchet["reason"]
+        elif ratchet_state.get("close"):
+            reason = ratchet_state["reason"]
         elif normal_window and record.get("last_exit_check_date") != now_et.date().isoformat():
             signals, errors = fetch_signals([underlying], now_et)
             signal = signals[0] if signals else None
@@ -1377,10 +1365,10 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
             "at": now_et.isoformat(), "underlying_price": round(spot, 4),
             "option_bid": (round(option_quote["bid"], 4) if option_quote else None),
             "executable_pnl": executable_pnl,
-            "capture_pct": ratchet.get("capture_pct"),
-            "ratchet_armed": ratchet.get("armed"),
-            "ratchet_high_water": ratchet.get("high_water_pnl"),
-            "ratchet_floor": ratchet.get("floor_pnl"),
+            "capture_pct": ratchet_state.get("capture_pct"),
+            "ratchet_armed": ratchet_state.get("armed"),
+            "ratchet_high_water": ratchet_state.get("high_water_pnl"),
+            "ratchet_floor": ratchet_state.get("floor_pnl"),
         }
 
         if not reason:

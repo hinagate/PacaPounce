@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import config
+from . import config, ratchet
 
 
 ET = ZoneInfo("America/New_York")
@@ -108,6 +108,23 @@ def _rolling_change_volatility(history: list[float]) -> float:
     return statistics.stdev(changes) if len(changes) > 1 else 0.0
 
 
+def spread_policy() -> ratchet.Policy:
+    """Credit-spread thresholds, measured against the opening credit.
+
+    A spread's P&L grinds rather than swings, so the size of its changes is what
+    identifies a disorderly tape.
+    """
+    return ratchet.Policy(
+        arm_pct=config.MONITOR_RATCHET_ARM_PCT,
+        giveback_pct=config.MONITOR_RATCHET_GIVEBACK_PCT,
+        high_vol_giveback_pct=config.MONITOR_HIGH_VOL_RATCHET_GIVEBACK_PCT,
+        high_vol_pct=config.MONITOR_HIGH_VOL_PCT_MAX_PROFIT,
+        confirmations=config.MONITOR_RATCHET_CONFIRMATIONS,
+        history_limit=60,
+        volatility_mode="changes",
+    )
+
+
 def observe(
     spread: dict,
     metrics: dict,
@@ -134,60 +151,41 @@ def observe(
         positions[key] = position
 
     pnl = float(metrics.get("pnl_executable") or 0.0)
-    history = [float(value) for value in position.get("history") or []]
-    history.append(pnl)
-    history = history[-60:]
-    high_water = max(float(position.get("high_water_pnl") or 0.0), pnl)
-    max_profit = max(float(metrics.get("max_profit") or 0.0), 0.01)
-    arm_threshold = config.MONITOR_RATCHET_ARM_PCT * max_profit
-    armed = high_water >= arm_threshold
-
-    change_volatility = _rolling_change_volatility(history)
-    volatility_ratio = change_volatility / max_profit
-    high_volatility = volatility_ratio >= config.MONITOR_HIGH_VOL_PCT_MAX_PROFIT
-    giveback_pct = (
-        config.MONITOR_HIGH_VOL_RATCHET_GIVEBACK_PCT
-        if high_volatility
-        else config.MONITOR_RATCHET_GIVEBACK_PCT
+    result = ratchet.update(
+        pnl=pnl,
+        denominator=float(metrics.get("max_profit") or 0.0),
+        history=position.get("history") or [],
+        breach_count=int(position.get("breach_count") or 0),
+        high_water=float(position.get("high_water_pnl") or 0.0),
+        policy=spread_policy(),
+        quote_ready=bool(metrics.get("quote_ready")),
     )
-    trailing_floor = high_water * (1.0 - giveback_pct) if armed else 0.0
-
-    nonpositive_slope = len(history) >= 3 and history[-1] <= history[-3]
-    below_floor = (
-        armed
-        and pnl > 0
-        and pnl <= trailing_floor
-        and nonpositive_slope
-        and bool(metrics.get("quote_ready"))
-    )
-    breach_count = int(position.get("breach_count") or 0) + 1 if below_floor else 0
-    ratchet_exit = breach_count >= config.MONITOR_RATCHET_CONFIRMATIONS
 
     position.update({
-        "history": history,
-        "high_water_pnl": round(high_water, 2),
-        "breach_count": breach_count,
+        "history": result["history"],
+        "high_water_pnl": result["high_water_pnl"],
+        "breach_count": result["breach_count"],
         "last_pnl": round(pnl, 2),
         "last_seen": now_et.isoformat(),
-        "ratchet_armed": armed,
-        "change_volatility_usd": round(change_volatility, 2),
-        "volatility_ratio": round(volatility_ratio, 6),
-        "high_volatility": high_volatility,
-        "trailing_floor": round(trailing_floor, 2),
+        "ratchet_armed": result["armed"],
+        "change_volatility_usd": result["volatility"],
+        "volatility_ratio": result["volatility_ratio"],
+        "high_volatility": result["high_volatility"],
+        "trailing_floor": result["trailing_floor_pnl"],
     })
     save(state, path)
     return {
-        "ratchet_armed": armed,
-        "ratchet_high_water_pnl": round(high_water, 2),
-        "ratchet_arm_threshold_pnl": round(arm_threshold, 2),
-        "ratchet_giveback_pct": giveback_pct,
-        "ratchet_trailing_floor_pnl": round(trailing_floor, 2),
-        "ratchet_breach_count": breach_count,
-        "ratchet_exit": ratchet_exit,
-        "pnl_change_volatility_usd": round(change_volatility, 2),
-        "pnl_volatility_ratio": round(volatility_ratio, 6),
-        "pnl_volatility_high": high_volatility,
-        "pnl_slope_nonpositive": nonpositive_slope,
+        "ratchet_armed": result["armed"],
+        "ratchet_high_water_pnl": result["high_water_pnl"],
+        "ratchet_arm_threshold_pnl": result["arm_threshold_pnl"],
+        "ratchet_giveback_pct": result["giveback_pct"],
+        "ratchet_trailing_floor_pnl": result["trailing_floor_pnl"],
+        "ratchet_breach_count": result["breach_count"],
+        "ratchet_exit": result["close"],
+        "pnl_change_volatility_usd": result["volatility"],
+        "pnl_volatility_ratio": result["volatility_ratio"],
+        "pnl_volatility_high": result["high_volatility"],
+        "pnl_slope_nonpositive": result["slope_nonpositive"],
     }
 
 

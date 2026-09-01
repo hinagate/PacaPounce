@@ -857,23 +857,75 @@ def test_ratchet_arms_and_trails_the_executable_high_water(monkeypatch):
 
 
 def test_ratchet_needs_consecutive_breaches_so_one_bad_quote_cannot_exit(monkeypatch):
-    # Up 50%, one spike down through the floor, then back above it.
+    # Up 50%, hold, one spike down through the floor, then recover above it.
     states = _run_ratchet(
-        [PREMIUM * 0.50, PREMIUM * 0.10, PREMIUM * 0.45], monkeypatch,
-        OPTION_MR_RATCHET_HIGH_VOL_PCT=9.9,
+        [PREMIUM * 0.50, PREMIUM * 0.48, PREMIUM * 0.10, PREMIUM * 0.45],
+        monkeypatch, OPTION_MR_RATCHET_HIGH_VOL_PCT=9.9,
     )
-    assert states[1]["breaches"] == 1 and not states[1]["close"]
-    assert states[2]["breaches"] == 0, "recovering above the floor must reset"
+    assert states[2]["breaches"] == 1 and not states[2]["close"]
+    assert states[3]["breaches"] == 0, "recovering above the floor must reset"
     assert not any(s["close"] for s in states)
 
 
 def test_ratchet_closes_after_sustained_giveback(monkeypatch):
     states = _run_ratchet(
-        [PREMIUM * 0.50, PREMIUM * 0.10, PREMIUM * 0.10], monkeypatch,
-        OPTION_MR_RATCHET_HIGH_VOL_PCT=9.9,
+        [PREMIUM * 0.50, PREMIUM * 0.48, PREMIUM * 0.10, PREMIUM * 0.10],
+        monkeypatch, OPTION_MR_RATCHET_HIGH_VOL_PCT=9.9,
     )
     assert states[-1]["close"]
     assert states[-1]["reason"] == "profit_ratchet"
+
+
+def test_long_call_inherits_the_guards_it_was_missing(monkeypatch):
+    """Written standalone, the long-call ratchet lacked two guards the
+    credit-spread lane had earned. Sharing the mechanism is what fixed that."""
+    # A dip that is already being bought back is not a giveback: the slope guard
+    # suppresses the breach even though the mark is under the floor.
+    rising = _run_ratchet(
+        [PREMIUM * 0.60, PREMIUM * 0.05, PREMIUM * 0.70, PREMIUM * 0.10],
+        monkeypatch, OPTION_MR_RATCHET_HIGH_VOL_PCT=9.9,
+    )
+    assert rising[2]["slope_nonpositive"] is False
+    assert rising[2]["breaches"] == 0
+
+    # An unusable quote cannot trip the ratchet. Note that it also clears the
+    # confirmations earned so far - a breach must be consecutive on quotes the
+    # monitor could actually act on. That is the credit-spread lane's original
+    # semantics, preserved here rather than redesigned during a refactor; it is
+    # conservative about closing, which is the opposite bias from the rest of
+    # the ratchet and is worth revisiting on its own.
+    state = None
+    for pnl in (PREMIUM * 0.50, PREMIUM * 0.48, PREMIUM * 0.10):
+        state = mr.ratchet_update(state, pnl, PREMIUM)
+    assert state["breaches"] == 1
+    stale = mr.ratchet_update(state, PREMIUM * 0.10, PREMIUM, quote_ready=False)
+    assert stale["close"] is False
+    assert stale["breaches"] == 0
+
+    # A missing mark is different from an unusable one: with nothing to measure
+    # the confirmations already earned are held rather than thrown away.
+    missing = mr.ratchet_update(state, None, PREMIUM)
+    assert missing["close"] is False
+    assert missing["breaches"] == 1
+
+
+def test_a_ratchet_close_is_always_taken_in_profit(monkeypatch):
+    """Losses belong to the 2xATR stop, never to the ratchet."""
+    import random
+
+    rng = random.Random(7)
+    closes = 0
+    for _ in range(400):
+        pnl, path = 0.0, []
+        for _ in range(60):
+            pnl += rng.gauss(0, 0.07) * PREMIUM
+            path.append(round(pnl, 2))
+        states = _run_ratchet(path, monkeypatch)
+        if states[-1]["close"]:
+            closes += 1
+            assert states[-1]["samples"][-1] > 0, "ratchet closed at a loss"
+            assert states[-1]["floor_pnl"] > 0
+    assert closes > 50, "the paths must actually exercise the closing branch"
 
 
 def test_elevated_volatility_tightens_the_trail_without_closing_by_itself(monkeypatch):
