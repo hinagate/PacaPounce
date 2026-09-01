@@ -287,6 +287,18 @@ def test_carry_to_break_even_prices_crossing_and_theta():
     assert wide["required_move_pct"] > config.OPTION_MR_SIGNAL_EDGE_PCT
 
 
+
+def _clock_agrees(monkeypatch):
+    """Tell maybe_enter the broker confirms this snapshot.
+
+    Stubbed per test rather than globally: the guard exists because a fabricated
+    snapshot once reached the live broker, so a test that wants the entry path
+    should have to say out loud that its snapshot is pretend.
+    """
+    monkeypatch.setattr(
+        mr.session, "verify_broker_clock", lambda *_a, **_k: (True, "stubbed clock")
+    )
+
 def _snapshot(now: datetime) -> SimpleNamespace:
     return SimpleNamespace(
         now_et=now,
@@ -363,6 +375,7 @@ def test_approved_entry_is_single_leg_option_limit_and_broker_reconciled(
                            "status": "accepted"},
     )
 
+    _clock_agrees(monkeypatch)
     result = mr.maybe_enter(snapshot)
 
     assert result["status"] == "SUBMITTED"
@@ -446,6 +459,7 @@ def test_transient_market_data_can_retry_without_consuming_the_day(
     monkeypatch.setattr(mr.config, "OPTION_MR_UNIVERSE", ["AAPL"])
     monkeypatch.setattr(mr, "fetch_signals", lambda _symbols, _now: ([], {"daily": "lag"}))
 
+    _clock_agrees(monkeypatch)
     result = mr.maybe_enter(snapshot)
 
     assert result["status"] == "waiting"
@@ -464,6 +478,7 @@ def test_transient_market_data_records_one_final_veto_near_window_end(
     monkeypatch.setattr(mr.config, "OPTION_MR_UNIVERSE", ["AAPL"])
     monkeypatch.setattr(mr, "fetch_signals", lambda _symbols, _now: ([], {"daily": "lag"}))
 
+    _clock_agrees(monkeypatch)
     result = mr.maybe_enter(snapshot)
 
     assert result["status"] == "VETOED"
@@ -661,6 +676,7 @@ def test_one_window_opens_several_positions_each_with_its_own_ai_review(
                            "status": "accepted"},
     )
 
+    _clock_agrees(monkeypatch)
     result = mr.maybe_enter(snapshot)
 
     # Two entries: the daily cap, not the candidate supply, is what stopped it.
@@ -725,6 +741,7 @@ def test_window_stops_at_the_portfolio_premium_budget(tmp_path, monkeypatch):
                            "status": "accepted"},
     )
 
+    _clock_agrees(monkeypatch)
     result = mr.maybe_enter(snapshot)
 
     assert len(result["entries"]) == 1

@@ -501,6 +501,45 @@ def entry_decision(
     return EntryDecision(True, "allowed", "MCP session preflight passed")
 
 
+def verify_broker_clock(snapshot, max_skew_seconds: float = 180.0) -> tuple[bool, str]:
+    """Re-read the broker clock and confirm it still describes this snapshot.
+
+    Every gate downstream trusts ``snapshot.now_et``: it decides whether a
+    decision window is open, what the session date is, and what goes into a
+    client order id. Nothing re-derived it from the broker, so a snapshot built
+    from anywhere other than a live ``get_clock`` was accepted on its word - and
+    a fabricated one, from a test driving the loop with a hand-made snapshot,
+    placed real orders stamped with its invented date.
+
+    This asks Alpaca once more, immediately before capital moves, and requires
+    the answer to match on all three things the snapshot claims: the wall clock,
+    the trading date, and whether the market is open. A live snapshot passes in
+    microseconds; a fabricated or stale one cannot.
+    """
+    try:
+        clock = mcp_client.run(mcp_client.call("get_clock"))
+    except Exception as exc:  # network, transport, anything
+        return False, f"broker clock unavailable ({type(exc).__name__}: {exc})"
+    if not isinstance(clock, dict) or clock.get("error") or not clock.get("timestamp"):
+        return False, f"broker clock unavailable ({clock})"
+
+    broker_now = _timestamp(clock.get("timestamp"))
+    skew = abs((broker_now - snapshot.now_et).total_seconds())
+    broker_open = bool(clock.get("is_open"))
+    detail = (
+        f"snapshot {snapshot.now_et.isoformat()} vs broker "
+        f"{broker_now.isoformat()} (skew {skew:.1f}s <= {max_skew_seconds:g}s); "
+        f"open snapshot={snapshot.market_open} broker={broker_open}"
+    )
+    if broker_now.date() != snapshot.now_et.date():
+        return False, f"broker trading date differs; {detail}"
+    if skew > max_skew_seconds:
+        return False, f"snapshot clock is stale or fabricated; {detail}"
+    if broker_open != bool(snapshot.market_open):
+        return False, f"market state disagrees with the broker; {detail}"
+    return True, detail
+
+
 def capture() -> SessionSnapshot:
     """Build one authoritative entry snapshot entirely through Alpaca MCP."""
     clock = mcp_client.run(mcp_client.call("get_clock")) or {}

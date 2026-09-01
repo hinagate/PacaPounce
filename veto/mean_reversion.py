@@ -26,7 +26,7 @@ from pathlib import Path
 from statistics import fmean
 from zoneinfo import ZoneInfo
 
-from . import config, llm, mcp_client, ratchet, sizing as sizing_mod
+from . import config, llm, mcp_client, ratchet, session, sizing as sizing_mod
 
 ET = ZoneInfo("America/New_York")
 ENTRY_PREFIX = "paca-callmr-open-"
@@ -827,7 +827,13 @@ def maybe_enter(snapshot) -> dict | None:
         and snapshot.options_trading_level >= config.MIN_OPTIONS_TRADING_LEVEL
         and snapshot.options_buying_power > 0
     )
+    clock_ok, clock_detail = session.verify_broker_clock(snapshot)
     checks = [
+        # Everything below trusts snapshot.now_et - which window is open, the
+        # session date, the client order id. Confirm it against Alpaca before
+        # any of that matters, so a snapshot the broker does not recognise can
+        # never reach an order.
+        _check("broker_clock_agrees", clock_ok, clock_detail),
         _check("paper_account_identity", bool(config.ALPACA_ACCOUNT_ID) and
                snapshot.account_number == config.ALPACA_ACCOUNT_ID,
                f"MCP={snapshot.account_number or 'missing'} configured={config.ALPACA_ACCOUNT_ID or 'missing'}"),
@@ -854,6 +860,9 @@ def maybe_enter(snapshot) -> dict | None:
         _check("pending_option_order", not snapshot.pending_opening_orders and not snapshot.pending_closing_orders,
                f"opening={len(snapshot.pending_opening_orders)}; closing={len(snapshot.pending_closing_orders)}"),
     ]
+    if not clock_ok:
+        return _write_decision(state, snapshot, "VETOED", checks, window=window_key,
+                               reason="broker_clock_disagrees")
     if not all(check["passed"] for check in checks):
         # Give an option fill/close a few supervisor cycles to reconcile, but
         # make a final auditable decision near the end of the ten-minute window.

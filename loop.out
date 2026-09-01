@@ -1,0 +1,8 @@
+MCP paper session active: one command owns entry hunting, the risk monitor, and the live dashboard; it stays resident across market closes and resumes from Alpaca MCP's next_open.
+  2026-09-01T10:31:50.574481-04:00 | open | entries=1/4 | pending-open=0 | option-structures=1/3 | MR-entries=4/2 | P&L=$-5388.54/$30.47
+  DASHBOARD STARTED - pid=58720; refresh=60s; local=dashboard/runtime/index.html
+  RISK MONITOR STARTED - pid=61136
+  ENTRY WAIT - full_capital_deployed: 1 spread(s) open; full-buying-power mode has $6,911.73 options BP remaining
+PacaPounce monitor: PAPER AUTO-EXIT | interval=30s | feed=opra | objective=full_buying_power | annual_target=8.0% | profit=50% | stop=70% max loss
+wrote C:\Github\PacaPounce\dashboard\runtime\index.html (73,899 bytes)
+[2026-09-01T10:31:55.384936-04:00] open=True orders=0 spreads=1 broker_uPL=$-5637.00 daily=$-5347.54/$30.47 | SPY 768/773 spot=764.25 execPnL=$-1517.00 hold | MR calls=5/5 managed

@@ -286,9 +286,19 @@ def cycle(
             if execution is None:
                 try:
                     final_snapshot = session.capture()
+                    # capture() reads the broker clock, but only if nothing has
+                    # replaced it. Confirm against Alpaca independently so a
+                    # substituted snapshot cannot carry an order to the broker.
+                    clock_ok, clock_detail = session.verify_broker_clock(final_snapshot)
+                    if not clock_ok:
+                        execution = {
+                            "submitted": False,
+                            "error": "broker_clock_disagrees",
+                            "detail": clock_detail,
+                        }
                     final_reentry = risk_state.reentry_status(final_snapshot.now_et)
                     final_decision = session.entry_decision(final_snapshot, final_reentry)
-                    if final_decision.allowed:
+                    if clock_ok and final_decision.allowed:
                         # Account eligibility and available options BP can change
                         # while Poe and the chain resolver are working. Re-run the
                         # entire deterministic gate against the final MCP snapshot.

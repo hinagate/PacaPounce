@@ -1,6 +1,9 @@
 """MCP-backed proposal-session controls."""
 import sys
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -8,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from veto import config, executor, gates, session  # noqa: E402
 import run as app  # noqa: E402
+
+ET = ZoneInfo("America/New_York")
 
 
 CALENDAR = [{"date": "2026-08-25", "open": "09:30", "close": "16:00"}]
@@ -419,6 +424,9 @@ def test_submit_refresh_blocks_order_that_appeared_during_proposal(monkeypatch):
 
 
 def test_submit_refresh_reruns_gate_against_latest_options_buying_power(monkeypatch):
+    monkeypatch.setattr(
+        app.session, "verify_broker_clock", lambda *_a, **_k: (True, "stubbed clock")
+    )
     initial = snapshot()
     reduced_bp = snapshot(account={**ELIGIBLE_ACCOUNT, "options_buying_power": "1.00"})
     raw_intent = {
@@ -677,3 +685,110 @@ def test_order_submission_fails_closed_if_bundled_monitor_dies(monkeypatch):
     )
     assert result["execution"]["error"] == "risk_monitor_unavailable"
     assert result["execution"]["detail"] == "monitor exited"
+
+
+def _clock_snapshot(now, market_open=True):
+    return SimpleNamespace(now_et=now, market_open=market_open)
+
+
+def _broker_clock(monkeypatch, timestamp, is_open=True):
+    monkeypatch.setattr(
+        session.mcp_client, "run",
+        lambda _coro: {"timestamp": timestamp, "is_open": is_open},
+    )
+    monkeypatch.setattr(session.mcp_client, "call", lambda *_a, **_k: None)
+
+
+def test_broker_clock_confirms_a_live_snapshot(monkeypatch):
+    now = datetime(2026, 9, 1, 11, 0, 0, tzinfo=ET)
+    _broker_clock(monkeypatch, "2026-09-01T11:00:04-04:00")
+
+    ok, detail = session.verify_broker_clock(_clock_snapshot(now))
+
+    assert ok, detail
+    assert "skew 4.0s" in detail
+
+
+def test_broker_clock_rejects_the_fabricated_snapshot_that_placed_real_orders(monkeypatch):
+    """The exact incident: a test drove the loop with a hand-made snapshot dated
+    2026-08-26T11:00 while the broker was on 2026-09-01, and five live orders
+    were placed carrying the invented date."""
+    fabricated = datetime(2026, 8, 26, 11, 0, tzinfo=ET)
+    _broker_clock(monkeypatch, "2026-09-01T10:31:50-04:00")
+
+    ok, detail = session.verify_broker_clock(_clock_snapshot(fabricated))
+
+    assert not ok
+    assert "trading date differs" in detail
+
+
+def test_broker_clock_rejects_a_stale_snapshot_within_the_same_day(monkeypatch):
+    stale = datetime(2026, 9, 1, 9, 45, tzinfo=ET)
+    _broker_clock(monkeypatch, "2026-09-01T11:00:00-04:00")
+
+    ok, detail = session.verify_broker_clock(_clock_snapshot(stale))
+
+    assert not ok
+    assert "stale or fabricated" in detail
+
+
+def test_broker_clock_rejects_a_snapshot_that_disagrees_about_market_state(monkeypatch):
+    now = datetime(2026, 9, 1, 11, 0, tzinfo=ET)
+    _broker_clock(monkeypatch, "2026-09-01T11:00:01-04:00", is_open=False)
+
+    ok, detail = session.verify_broker_clock(_clock_snapshot(now, market_open=True))
+
+    assert not ok
+    assert "market state disagrees" in detail
+
+
+def test_broker_clock_fails_closed_when_alpaca_cannot_be_reached(monkeypatch):
+    now = datetime(2026, 9, 1, 11, 0, tzinfo=ET)
+    monkeypatch.setattr(session.mcp_client, "call", lambda *_a, **_k: None)
+
+    def explode(_coro):
+        raise RuntimeError("transport down")
+
+    monkeypatch.setattr(session.mcp_client, "run", explode)
+    ok, detail = session.verify_broker_clock(_clock_snapshot(now))
+    assert not ok and "unavailable" in detail
+
+    monkeypatch.setattr(session.mcp_client, "run", lambda _coro: {"error": "boom"})
+    ok, detail = session.verify_broker_clock(_clock_snapshot(now))
+    assert not ok and "unavailable" in detail
+
+
+def test_the_long_call_lane_will_not_enter_on_an_unconfirmed_clock(tmp_path, monkeypatch):
+    """End to end: the guard stops the entry before any chain or order call."""
+    from veto import mean_reversion as mr
+
+    monkeypatch.setattr(mr.config, "ALPACA_ACCOUNT_ID", "PAPER")
+    monkeypatch.setattr(mr.config, "OPTION_MR_DECISION_WINDOWS", ((11, 0),))
+    monkeypatch.setattr(
+        mr.session, "verify_broker_clock",
+        lambda *_a, **_k: (False, "broker trading date differs"),
+    )
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("must not reach the chain on an unconfirmed clock")
+
+    monkeypatch.setattr(mr, "fetch_signals", explode)
+    monkeypatch.setattr(mr, "select_long_call_contract", explode)
+
+    fabricated = datetime(2026, 8, 26, 11, 0, tzinfo=ET)
+    result = mr.maybe_enter(SimpleNamespace(
+        now_et=fabricated,
+        session_date=fabricated.date().isoformat(),
+        market_open=True,
+        regular_close=fabricated.replace(hour=16, minute=0),
+        account_number="PAPER", account_status="ACTIVE",
+        trading_blocked=False, account_blocked=False, trade_suspended_by_user=False,
+        options_approved_level=3, options_trading_level=3,
+        options_buying_power=100_000, equity=100_000,
+        option_positions=(), non_option_positions=(),
+        option_mr_entries_today=0,
+        pending_opening_orders=(), pending_closing_orders=(),
+    ))
+
+    assert result["status"] == "VETOED"
+    assert result["reason"] == "broker_clock_disagrees"
