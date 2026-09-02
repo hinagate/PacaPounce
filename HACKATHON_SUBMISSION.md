@@ -285,9 +285,14 @@ explicit execution command (`run.py --loop`, `run.py --trade`, or standalone
 
 Exit controls include:
 
-- executable 50% credit capture;
+- hold-to-expiry in the competition configuration
+  (`MONITOR_PROFIT_EXIT_ENABLED=false`): the entry gate prices the spread on
+  its terminal payoff, and on a $2-wide spread the profit exits were closing
+  winners early while losers ran to the breach (simulated −$520 vs +$587);
+- with profit exits on: executable 50% credit capture;
 - restart-safe executable-P&L high-water ratchet after 20% capture;
-- 20% normal giveback, tightened to 10% during high money volatility;
+- 20% normal giveback, tightened to 10% during high money volatility, where
+  dispersion inside 1.5 ticks per contract is quote noise and does not count;
 - two-sample confirmation so a single option mark cannot force an exit;
 - target lock in fractional mode when closing preserves the daily 8%-annual benchmark;
 - non-expiry stop at 70% of defined max loss;

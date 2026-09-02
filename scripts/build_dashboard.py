@@ -550,6 +550,10 @@ EXIT_LABELS = {
     "long_strike_breach": "Long-strike breach",
     "pin_risk": "Expiry pin-risk cleanup",
     "market_closed": "Market-close cleanup",
+    "underlying_stop": "Underlying 2xATR stop",
+    "max_hold_sessions": "Holding-session limit",
+    "ema5_recovery": "EMA5 recovery",
+    "issuer_concentration": "One position per issuer",
 }
 
 
@@ -873,6 +877,26 @@ evidence and are never mixed into competition P&amp;L.</div>"""
                      f'for broker reconciliation. A short window is dominated by variance - '
                      f'this is a reconciliation, not evidence of edge.</div>')
 
+    if config.MONITOR_PROFIT_EXIT_ENABLED:
+        gate9_title = "Profit high-water"
+        gate9_body = (
+            f"Executable P&amp;L arms a persistent trail after "
+            f"{config.MONITOR_RATCHET_ARM_PCT:.0%} credit capture. Two confirmed givebacks "
+            f"close at {config.MONITOR_RATCHET_GIVEBACK_PCT:.0%}; high money volatility "
+            f"tightens the trail to {config.MONITOR_HIGH_VOL_RATCHET_GIVEBACK_PCT:.0%} but "
+            f"cannot exit alone, and dispersion inside 1.5 ticks per contract is quote "
+            f"noise rather than volatility."
+        )
+    else:
+        gate9_title = "Hold to expiry"
+        gate9_body = (
+            "The entry gate prices the spread on its terminal payoff, so the monitor "
+            "delivers that payoff: no profit target and no trail. The spread is held "
+            "to expiry and closed at market only if the underlying crosses the long "
+            "strike; the final-30-minute pin-risk exit still applies. Disabled profit "
+            "exits are recorded as <code>hold_to_expiry</code> in the session log."
+        )
+
     html = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1035,11 +1059,8 @@ permission from Alpaca. No daily trade counter or pending-order lock lives only 
     actual replacement limit, without charging the bid/ask concession twice. An MCP
     <code>accepted</code> envelope is not success: <code>get_orders(status=all)</code> must
     return the same client ID and an Alpaca broker order ID.</p></div>
-  <div class="gate-card"><div class="top"><span class="seq">9</span><h3>Profit high-water</h3>
-    <span class="layer">POLICY</span></div><p>Executable P&amp;L arms a persistent trail after
-    {config.MONITOR_RATCHET_ARM_PCT:.0%} credit capture. Two confirmed givebacks close at
-    {config.MONITOR_RATCHET_GIVEBACK_PCT:.0%}; high money volatility tightens the trail to
-    {config.MONITOR_HIGH_VOL_RATCHET_GIVEBACK_PCT:.0%} but cannot exit alone.</p></div>
+  <div class="gate-card"><div class="top"><span class="seq">9</span><h3>{gate9_title}</h3>
+    <span class="layer">POLICY</span></div><p>{gate9_body}</p></div>
   <div class="gate-card"><div class="top"><span class="seq">10</span><h3>Better re-entry</h3>
     <span class="layer">MCP + POLICY</span></div><p>Profit exits wait
     {config.REENTRY_COOLDOWN_MIN} minutes plus {config.REENTRY_STABLE_MIN} calm, liquid minutes.

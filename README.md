@@ -112,14 +112,23 @@ everything and the second strategy was structurally unable to place an order.
 - Quantity comes from the active sizing objective. `risk_budget` targets 0.5% of
   equity at an underlying 2×ATR14 stop model; `tournament` sizes from the premium
   budget directly, because the competition scores the upper tail rather than the
-  mean. Either way the full premium paid is the legal maximum loss, and the
-  portfolio premium budget and live options buying power both bind.
+  mean, but the modeled loss at the 2×ATR stop still binds at
+  `OPTION_MR_MAX_STOP_RISK_PCT` (15% of equity per position). Sized on premium
+  alone, what a position risked at its stop was whatever delta the chain
+  happened to offer — 54% of premium at 0.8, roughly all of it at 0.6 — which is
+  a risk decision made by the chain rather than by the policy. Either way the
+  full premium paid is the legal maximum loss, and the portfolio premium budget
+  and live options buying power both bind.
 - `get_orders` must confirm the client ID and Alpaca broker order ID before
   SUBMITTED is recorded.
 - The 30-second monitor sends a `sell_to_close` limit at the live bid when the
   underlying hits its 2×ATR stop, when the profit ratchet trips, or when the
-  holding-session limit is reached. The LLM never selects the contract, size,
-  or exit.
+  holding-session limit is reached. A close that has not filled protects
+  nothing: a limit still open after 20 seconds is cancelled and resubmitted at
+  the fresh bid, and after two unfilled limits the next attempt is a market
+  order. Adopted positions that duplicate an issuer the lane already holds are
+  closed after the opening rotation (`issuer_concentration`), keeping the
+  lane's own entry. The LLM never selects the contract, size, or exit.
 - **The ratchet exists for one failure mode.** Being wrong about direction is a
   probability outcome, and the 2×ATR stop already bounds it. Being *right* and
   ending flat is not a probability outcome — it is a missing control, and under
@@ -131,9 +140,15 @@ everything and the second strategy was structurally unable to place an order.
   giveback is below 1, **an armed floor is always above breakeven**; the code
   clamps it at zero as well so no configuration can break that. The trail is
   measured at the live bid, not the midpoint, so the floor is a number the
-  position can actually realise. It cannot defend against a gap through the
-  floor, and the two-confirmation requirement means the close lags the floor by
-  two observations — both are bounded costs of not exiting on a single tick.
+  position can actually realise. Once armed the floor is a hard exit whatever
+  the mark's sign: a quote that gaps from above the floor to below zero is the
+  breach the floor exists for, not an exemption from it (an earlier form of
+  the rule required a positive mark for a breach to count, which silently
+  handed a gapped winner back to the 2×ATR stop). "Elevated volatility" is the
+  dispersion of recent marks as a multiple of the P&L a one-ATR move would
+  produce, so it means the same tape for every contract rather than reading
+  leverage. The two-confirmation requirement means the close lags the floor
+  by two observations — a bounded cost of not exiting on a single tick.
 - LLM sees the top numeric candidate plus timestamped Alpaca `get_news` output.
   It may veto a concrete news/event risk and writes the thesis. `get_news` is
   **not** presented as a verified earnings calendar; this limitation remains
@@ -217,9 +232,9 @@ works if the assumption holds.
 The credit-spread lane uses `full_buying_power`: after a spread passes the
 economic model, quantity is the largest integer count whose entire defined loss
 fits inside its own equity budget, bounded by Alpaca's live
-`options_buying_power`. The competition sets `PACAPOUNCE_SPREAD_EQUITY_PCT=0.20`
+`options_buying_power`. The competition sets `PACAPOUNCE_SPREAD_EQUITY_PCT=0.10`
 and `PACAPOUNCE_OPTIONS_BP_UTILIZATION=1.0`, so one approved spread may carry
-about $20,000 of defined maximum loss on the $100,000 account. The result records
+about $10,000 of defined maximum loss on the $100,000 account. The result records
 source buying power, the lane budget, quantity, total defined loss, and
 utilization percentage.
 
@@ -331,9 +346,10 @@ best upside-to-downside ratio of the six tested.
 The configuration that follows from this is two equity budgets rather than one:
 
 ```
-PACAPOUNCE_SPREAD_EQUITY_PCT=0.20          20% of equity as defined spread loss
+PACAPOUNCE_SPREAD_EQUITY_PCT=0.10          10% of equity as defined spread loss
 PACAPOUNCE_OPTION_MR_TOTAL_PREMIUM_PCT=0.70   70% of equity as long-call premium
 PACAPOUNCE_OPTION_MR_SIZING_MODE=tournament   size from premium, not the ATR stop
+PACAPOUNCE_OPTION_MR_MAX_STOP_RISK_PCT=0.15   ...but at most 15% of equity at the stop
 ```
 
 Each lane's share is taken from **equity**, not from whatever buying power is
@@ -503,14 +519,23 @@ paper account, model, market-data feed, or risk policy.
 
 The monitor reconstructs credit spreads and the second strategy's long-call
 lifecycle from Alpaca's live option positions and polls every 30 seconds. It
-batches independent MCP requests, measures both
-midpoint and immediately executable P&L, and takes profit after 50% of the opening
-credit is captured. A restart-safe profit ratchet arms after 20% capture and
-closes after two confirmed observations give back 20% of the executable high
-water; high P&L volatility tightens that trail to 10% but never closes by itself.
-The monitor also applies the repository's 70%-of-max-loss guard on non-expiry
-days. Expiry-day stop-loss exits are suppressed; only late pin risk between the
-strikes forces a close. A standalone monitor requires `--execute`
+batches independent MCP requests and measures both midpoint and immediately
+executable P&L. The entry gate prices a spread on its terminal payoff, and on a
+$2-wide spread the 50% profit target and the trailing ratchet were closing the
+winners early while the losers ran to the breach — simulated on the live SPY
+770/772C the configured monitor was −$520 expected against +$587 for holding to
+expiry with the long-strike breach still armed. The competition therefore runs
+with `PACAPOUNCE_MONITOR_PROFIT_EXIT_ENABLED=false`: the spread is held to
+expiry and closed at market only if the underlying crosses the long strike, and
+the spread lane's share of equity is halved to 10% because the trail no longer
+trims its loss tail. With profit exits on, the monitor takes profit after 50% of
+the opening credit is captured and a restart-safe profit ratchet arms after 20%
+capture and closes after two confirmed observations give back 20% of the
+executable high water; high P&L volatility tightens that trail to 10% but never
+closes by itself, and a change dispersion inside 1.5 ticks per contract is quote
+flicker rather than volatility. The monitor also applies the repository's
+70%-of-max-loss guard on non-expiry days. Expiry-day stop-loss exits are
+suppressed; only late pin risk between the strikes forces a close. A standalone monitor requires `--execute`
 before it may mutate; the explicitly mutating `run.py --loop` command enables its
 bundled paper monitor. Both paths check the MCP environment and trade URL for
 paper mode at startup.
