@@ -260,3 +260,41 @@ def test_legacy_consumed_flag_still_counts_as_one_reentry(tmp_path, monkeypatch)
     status = risk_state.reentry_status(now + timedelta(minutes=31), path)
     assert not status["allowed"]
     assert status["reason"] == "reentry_already_used"
+
+
+def test_tick_noise_is_not_volatility(tmp_path, monkeypatch):
+    """The live SPY 770/772C x111 read a 0.033 "volatility ratio" on a 3-cent
+    quote range while the index was flat, which halved its giveback. A change
+    dispersion inside 1.5 ticks per contract is quote flicker, not a fast tape."""
+    monkeypatch.setattr(config, "SESSION_LOG", tmp_path / "missing.jsonl")
+    monkeypatch.setattr(config, "MONITOR_HIGH_VOL_PCT_MAX_PROFIT", 0.03)
+    path = tmp_path / "risk.json"
+    now = datetime(2026, 8, 26, 10, 0, tzinfo=ET)
+    spread = {**SPREAD, "qty": 111}
+    max_profit = 0.30 * 100 * 111                       # $3,330
+    tick = 0.01 * 100 * 111                             # $111 per one-cent move
+
+    # One-tick flicker: dispersion ~ half a tick, ratio 0.017-0.033 of max
+    # profit, which the old rule read as elevated volatility.
+    result = None
+    for index, cents in enumerate((0, 1, 0, 1, 0, 1, 0, 1)):
+        result = risk_state.observe(
+            spread, metrics(1_000.0 + cents * tick, max_profit),
+            now + timedelta(seconds=30 * index), path,
+        )
+    assert result["pnl_volatility_ratio"] >= 0.03, "the fixture must reproduce the flicker"
+    assert not result["pnl_volatility_high"]
+    assert result["ratchet_giveback_pct"] == config.MONITOR_RATCHET_GIVEBACK_PCT
+
+    # A genuine five-cent swing on the same spread still counts.
+    for index, cents in enumerate((0, 5, 0, 5, 0, 5)):
+        result = risk_state.observe(
+            spread, metrics(1_000.0 + cents * tick, max_profit),
+            now + timedelta(minutes=10, seconds=30 * index), path,
+        )
+    assert result["pnl_volatility_high"]
+    assert result["ratchet_giveback_pct"] == config.MONITOR_HIGH_VOL_RATCHET_GIVEBACK_PCT
+
+    # Without a quantity there is no floor, so the existing behaviour holds.
+    bare = risk_state.observe(SPREAD, metrics(0.0), now, tmp_path / "bare.json")
+    assert bare["pnl_volatility_high"] is False

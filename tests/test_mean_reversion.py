@@ -926,12 +926,15 @@ def test_long_call_inherits_the_guards_it_was_missing(monkeypatch):
     assert missing["breaches"] == 1
 
 
-def test_a_ratchet_close_is_always_taken_in_profit(monkeypatch):
-    """Losses belong to the 2xATR stop, never to the ratchet."""
+def test_a_ratchet_close_is_a_confirmed_breach_of_a_positive_floor(monkeypatch):
+    """The floor is always in profit, and a close is always a confirmed mark at
+    or below it. The mark's own sign is not a condition: a position that never
+    armed belongs to the 2xATR stop, but one that armed and then gapped through
+    its floor belongs here, at whatever price it gapped to."""
     import random
 
     rng = random.Random(7)
-    closes = 0
+    closes = losses = 0
     for _ in range(400):
         pnl, path = 0.0, []
         for _ in range(60):
@@ -940,9 +943,35 @@ def test_a_ratchet_close_is_always_taken_in_profit(monkeypatch):
         states = _run_ratchet(path, monkeypatch)
         if states[-1]["close"]:
             closes += 1
-            assert states[-1]["samples"][-1] > 0, "ratchet closed at a loss"
             assert states[-1]["floor_pnl"] > 0
+            assert states[-1]["samples"][-1] <= states[-1]["floor_pnl"]
+            assert states[-1]["breaches"] == config.OPTION_MR_RATCHET_CONFIRMATIONS
+            losses += states[-1]["samples"][-1] <= 0
+        for state in states:
+            assert not (state["armed"] and state["samples"][-1] <= 0
+                        and state["breaches"] == 0 and state["slope_nonpositive"]
+                        and state["samples"][-1] <= state["floor_pnl"]), (
+                "an armed floor was breached without the breach being counted"
+            )
     assert closes > 50, "the paths must actually exercise the closing branch"
+    assert losses > 0, "the paths must include a gap through the floor"
+
+
+def test_a_gap_through_the_floor_is_a_breach_not_an_exemption(monkeypatch):
+    """The earlier rule required the mark to be positive before a breach
+    counted, so a quote that gapped from above the floor to below zero was
+    never a breach at all: the armed winner was handed back to the -2 ATR
+    stop. On the live GOOG 320C x18 that round trip averaged -$10k in
+    simulation against -$2k with the floor as a hard exit."""
+    path = [PREMIUM * 0.20, PREMIUM * 0.60, -PREMIUM * 0.10, -PREMIUM * 0.10]
+    states = _run_ratchet(path, monkeypatch, OPTION_MR_RATCHET_HIGH_VOL_PCT=9.9)
+
+    assert states[1]["armed"]
+    assert states[2]["breaches"] == 1, "the gap itself is the first breach"
+    assert states[-1]["close"]
+    assert states[-1]["reason"] == "profit_ratchet"
+    assert states[-1]["samples"][-1] < 0
+    assert states[-1]["floor_pnl"] == round(PREMIUM * 0.60 * 0.60, 2)
 
 
 def test_elevated_volatility_tightens_the_trail_without_closing_by_itself(monkeypatch):
@@ -1147,3 +1176,399 @@ def test_an_explicit_arm_threshold_overrides_the_premium_share(monkeypatch):
     low = mr.ratchet_update(None, PREMIUM * 0.16, PREMIUM,
                             arm_threshold=PREMIUM * 0.05)
     assert low["armed"]
+
+
+def test_fast_tape_is_measured_against_a_one_atr_move_not_premium(monkeypatch):
+    """As a share of premium the same minutes read 0.033 on a 0.59-delta call
+    and 0.020 on a 0.77-delta call of the same stock: the flag was reading
+    leverage, not the tape. Against the P&L of a one-ATR move it means the
+    same underlying behaviour for every contract."""
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_HIGH_VOL_ATR", 0.04)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_HIGH_VOL_PCT", 0.03)
+    scale = mr.ratchet_vol_scale(5.90, 0.807, 18)
+    assert scale == pytest.approx(5.90 * 0.807 * 18 * 100)
+    assert mr.ratchet_vol_scale(0.0, 0.8, 18) is None
+    assert mr.ratchet_vol_scale(5.9, 0.0, 18) is None
+    assert mr.ratchet_vol_scale(5.9, 0.8, 0) is None
+
+    # An $800 wobble around the high-water mark: 1.1% of the $33k premium
+    # (calm under the old rule) but 7% of a one-ATR move.
+    path = [PREMIUM * 0.50, PREMIUM * 0.50 + 800, PREMIUM * 0.50]
+    by_premium = by_atr = None
+    for pnl in path:
+        by_premium = mr.ratchet_update(by_premium, pnl, PREMIUM)
+        by_atr = mr.ratchet_update(by_atr, pnl, PREMIUM, volatility_scale=scale)
+    assert not by_premium["high_volatility"]
+    assert by_atr["high_volatility"]
+    assert by_atr["giveback_pct"] == 0.25 and by_premium["giveback_pct"] == 0.40
+    assert by_atr["pnl_volatility"] == pytest.approx(
+        by_premium["pnl_volatility"] * PREMIUM / scale, rel=1e-4
+    )
+
+
+def test_call_ratchet_policy_reads_the_atr_threshold_only_when_asked(monkeypatch):
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_HIGH_VOL_ATR", 0.04)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_HIGH_VOL_PCT", 0.03)
+    assert mr.call_ratchet_policy().high_vol_pct == 0.03
+    assert mr.call_ratchet_policy(atr_units=True).high_vol_pct == 0.04
+
+
+def test_tournament_size_is_capped_by_the_loss_at_the_stop(monkeypatch):
+    """Sized on premium alone, the modeled loss at the 2xATR stop was 54% of
+    premium on a 0.8-delta call and roughly all of it at 0.6: the chain was
+    choosing the risk. The cap makes that a policy number."""
+    monkeypatch.setattr(mr.config, "OPTION_MR_TOURNAMENT", True)
+    monkeypatch.setattr(mr.config, "OPTION_MR_SIZING_MODE", "tournament")
+    monkeypatch.setattr(mr.config, "OPTION_MR_MAX_PREMIUM_PCT", 0.35)
+    monkeypatch.setattr(mr.config, "OPTION_MR_MAX_STOP_RISK_PCT", 0.15)
+    monkeypatch.setattr(mr.config, "OPTION_MR_STOP_ATR_MULTIPLE", 2.0)
+    monkeypatch.setattr(mr.config, "MAX_CONTRACTS", 1000)
+
+    # The live GOOG 320C: premium 18.50, delta 0.807, ATR 6.18 -> modeled
+    # stop $997/contract. Premium alone allowed 18; $15k of stop risk allows 15.
+    sizing = mr.option_position_size(
+        equity=100_000.0, options_buying_power=100_000.0,
+        premium=18.50, delta=0.807, atr=6.1761, premium_budget=70_000.0,
+    )
+    assert sizing["by_premium"] == 18
+    assert sizing["by_stop_risk"] == 15
+    assert sizing["contracts"] == 15
+    assert sizing["stop_risk_cap"] == 15_000.0
+    assert sizing["modeled_stop_loss_per_contract"] * 15 <= 15_000.0
+
+    # A high-delta, low-ATR call is bound by premium as before.
+    calm = mr.option_position_size(
+        equity=100_000.0, options_buying_power=100_000.0,
+        premium=24.35, delta=0.82, atr=5.0, premium_budget=70_000.0,
+    )
+    assert calm["contracts"] == calm["by_premium"] == 14
+    assert calm["by_stop_risk"] > calm["by_premium"]
+
+    # The cap is a share of equity, so a smaller account gets fewer contracts
+    # for the same contract.
+    small = mr.option_position_size(
+        equity=50_000.0, options_buying_power=100_000.0,
+        premium=18.50, delta=0.807, atr=6.1761, premium_budget=70_000.0,
+    )
+    assert small["by_stop_risk"] == 7 and small["contracts"] == 7
+
+
+def _exit_harness(tmp_path, monkeypatch, contract, record, *, quotes_bid=7.0,
+                  spot=94.9, verify=None):
+    """State, quotes and a recording broker for one managed long call."""
+    monkeypatch.setattr(mr.config, "OPTION_MR_STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(mr.config, "OPTION_MR_LOG", tmp_path / "decisions.jsonl")
+    monkeypatch.setattr(mr.config, "OPTION_MR_EXIT_CHASE_AFTER_SEC", 20)
+    monkeypatch.setattr(mr.config, "OPTION_MR_EXIT_MARKET_AFTER_CHASES", 2)
+    mr.save_state({"positions": {contract: record}})
+    calls = []
+    monkeypatch.setattr(mr.mcp_client, "call", lambda tool, **kwargs: (tool, kwargs))
+    monkeypatch.setattr(mr.mcp_client, "call_many", lambda calls_: ("many", calls_))
+
+    def run(call):
+        if call[0] == "many":
+            return [
+                {"quotes": {contract: {"bp": quotes_bid, "ap": quotes_bid + 0.2}}},
+                {"quotes": {record["underlying"]: {"bp": spot, "ap": spot + 0.2}}},
+            ]
+        calls.append(call)
+        return {"status": "accepted", "id": "cancel-ack"}
+
+    monkeypatch.setattr(mr.mcp_client, "run", run)
+    monkeypatch.setattr(
+        mr, "verify_order",
+        verify or (lambda client_id, **_kwargs: {
+            "id": "exit-order", "status": "accepted", "client_order_id": client_id,
+        }),
+    )
+    return calls
+
+
+def _decisions(tmp_path):
+    rows = (tmp_path / "decisions.jsonl").read_text(encoding="utf-8").splitlines()
+    return [json.loads(row) for row in rows if row.strip()]
+
+
+def test_an_unfilled_close_is_chased_then_sent_to_market(tmp_path, monkeypatch):
+    """A close that has not filled protects nothing. The day limit at the bid
+    is cancelled after its grace, resubmitted at the fresh bid, and after two
+    unfilled limits the next attempt is a market order."""
+    contract = "AAPL260918C00095000"
+    submitted = datetime(2026, 9, 2, 10, 0, tzinfo=ET)
+    record = {
+        "status": "exit_pending", "contract_symbol": contract, "underlying": "AAPL",
+        "signal_date": "2026-09-01", "underlying_stop": 96.0, "qty": 1,
+        "entry_client_order_id": "paca-callmr-open-test",
+        "exit_client_order_id": "paca-callmr-close-a", "exit_reason": "underlying_stop",
+        "exit_submitted_at": submitted.isoformat(), "exit_limit": 7.10,
+    }
+    calls = _exit_harness(tmp_path, monkeypatch, contract, record)
+    positions = [{
+        "symbol": contract, "asset_class": "us_option", "qty": "1",
+        "avg_entry_price": "10.0", "unrealized_pl": "-300",
+    }]
+    our_order = {
+        "id": "exit-order", "symbol": contract, "side": "sell",
+        "position_intent": "sell_to_close", "client_order_id": "paca-callmr-close-a",
+        "status": "accepted",
+    }
+
+    # Inside the grace: nothing happens.
+    early = submitted + timedelta(seconds=10)
+    mr.monitor_cycle({"timestamp": early.isoformat(), "is_open": True},
+                     [our_order], positions, {}, True)
+    assert calls == []
+
+    # Past the grace: our order is cancelled, nothing else is placed yet.
+    late = submitted + timedelta(seconds=25)
+    mr.monitor_cycle({"timestamp": late.isoformat(), "is_open": True},
+                     [our_order], positions, {}, True)
+    assert calls == [("cancel_order_by_id", {"order_id": "exit-order"})]
+    state = mr.load_state()["positions"][contract]
+    assert state["status"] == "exit_pending"
+    assert state["exit_chases"] == 1
+    chase = [row for row in _decisions(tmp_path) if row["kind"] == "exit_chase"][-1]
+    assert chase["stale_limit"] == 7.10 and chase["age_sec"] == 25.0
+    assert chase["broker_order_id"] == "exit-order"
+
+    # The cancel is in flight: it is not requested again next cycle.
+    calls.clear()
+    mr.monitor_cycle({"timestamp": (late + timedelta(seconds=30)).isoformat(),
+                      "is_open": True}, [our_order], positions, {}, True)
+    assert calls == []
+
+    # The broker confirms the cancellation, the record returns to open and the
+    # exit decision re-fires at the fresh bid, still as a limit (one chase).
+    cancelled = {"paca-callmr-close-a"}
+    monkeypatch.setattr(mr, "verify_order", lambda client_id, **_k: {
+        "id": f"o-{client_id}", "client_order_id": client_id,
+        "status": "canceled" if client_id in cancelled else "accepted",
+    })
+    resubmit = late + timedelta(seconds=60)
+    mr.monitor_cycle({"timestamp": resubmit.isoformat(), "is_open": True},
+                     [], positions, {}, True)
+    tool, kwargs = calls[-1]
+    assert tool == "place_option_order"
+    assert kwargs["type"] == "limit" and kwargs["limit_price"] == "7.00"
+    state = mr.load_state()["positions"][contract]
+    assert state["status"] == "exit_pending" and state["exit_chases"] == 1
+    assert state["exit_order_type"] == "limit"
+    assert state["exit_cancel_requested_at"] is None
+    submitted_row = [r for r in _decisions(tmp_path) if r["kind"] == "exit_submitted"][-1]
+    assert submitted_row["chases"] == 1 and submitted_row["order_type"] == "limit"
+
+    # Second unfilled limit -> cancelled -> the third attempt goes to market.
+    calls.clear()
+    second = {**our_order, "id": "exit-order-2",
+              "client_order_id": state["exit_client_order_id"]}
+    mr.monitor_cycle({"timestamp": (resubmit + timedelta(seconds=25)).isoformat(),
+                      "is_open": True}, [second], positions, {}, True)
+    assert calls == [("cancel_order_by_id", {"order_id": "exit-order-2"})]
+    assert mr.load_state()["positions"][contract]["exit_chases"] == 2
+
+    cancelled.add(state["exit_client_order_id"])
+    calls.clear()
+    mr.monitor_cycle({"timestamp": (resubmit + timedelta(seconds=60)).isoformat(),
+                      "is_open": True}, [], positions, {}, True)
+    tool, kwargs = calls[-1]
+    assert tool == "place_option_order"
+    assert kwargs["type"] == "market"
+    assert "limit_price" not in kwargs
+    assert kwargs["position_intent"] == "sell_to_close"
+    state = mr.load_state()["positions"][contract]
+    assert state["exit_order_type"] == "market" and state["exit_limit"] is None
+    submitted_row = [r for r in _decisions(tmp_path) if r["kind"] == "exit_submitted"][-1]
+    assert submitted_row["order_type"] == "market"
+    assert submitted_row["limit_price"] is None and submitted_row["executable_bid"] == 7.0
+
+
+def test_chase_leaves_other_close_orders_alone(tmp_path, monkeypatch):
+    contract = "AAPL260918C00095000"
+    submitted = datetime(2026, 9, 2, 10, 0, tzinfo=ET)
+    record = {
+        "status": "exit_pending", "contract_symbol": contract, "underlying": "AAPL",
+        "signal_date": "2026-09-01", "underlying_stop": 96.0, "qty": 1,
+        "exit_client_order_id": "paca-callmr-close-a", "exit_reason": "underlying_stop",
+        "exit_submitted_at": submitted.isoformat(), "exit_limit": 7.10,
+    }
+    calls = _exit_harness(tmp_path, monkeypatch, contract, record)
+    positions = [{"symbol": contract, "asset_class": "us_option", "qty": "1",
+                  "avg_entry_price": "10.0"}]
+    foreign = {"id": "not-ours", "symbol": contract, "side": "sell",
+               "position_intent": "sell_to_close", "client_order_id": "manual-1"}
+
+    mr.monitor_cycle({"timestamp": (submitted + timedelta(minutes=5)).isoformat(),
+                      "is_open": True}, [foreign], positions, {}, True)
+    assert calls == []
+
+    # Dry runs never cancel either.
+    ours = {**foreign, "id": "exit-order", "client_order_id": "paca-callmr-close-a"}
+    mr.monitor_cycle({"timestamp": (submitted + timedelta(minutes=5)).isoformat(),
+                      "is_open": True}, [ours], positions, {}, False)
+    assert calls == []
+
+
+def test_chase_count_resets_when_the_broker_ended_the_order(tmp_path, monkeypatch):
+    """A day order that expired at the close was not chased; the next session
+    starts at a limit again rather than inheriting a market order."""
+    contract = "AAPL260918C00095000"
+    yesterday = datetime(2026, 9, 1, 15, 50, tzinfo=ET)
+    record = {
+        "status": "exit_pending", "contract_symbol": contract, "underlying": "AAPL",
+        "signal_date": "2026-08-31", "underlying_stop": 96.0, "qty": 1,
+        "exit_client_order_id": "paca-callmr-close-a", "exit_reason": "underlying_stop",
+        "exit_submitted_at": yesterday.isoformat(), "exit_limit": 7.10,
+        "exit_chases": 2, "exit_cancel_requested_at": None,
+    }
+    calls = _exit_harness(
+        tmp_path, monkeypatch, contract, record,
+        verify=lambda client_id, **_k: {"id": "x", "status": "expired",
+                                        "client_order_id": client_id},
+    )
+    positions = [{"symbol": contract, "asset_class": "us_option", "qty": "1",
+                  "avg_entry_price": "10.0"}]
+    now = datetime(2026, 9, 2, 9, 40, tzinfo=ET)
+    mr.monitor_cycle({"timestamp": now.isoformat(), "is_open": True},
+                     [], positions, {}, True)
+    tool, kwargs = calls[-1]
+    assert tool == "place_option_order" and kwargs["type"] == "limit"
+    assert mr.load_state()["positions"][contract]["exit_chases"] == 0
+
+
+def _goog_records():
+    own = {
+        "status": "open", "contract_symbol": "GOOG260918C00320000", "underlying": "GOOG",
+        "signal_date": "2026-09-01", "underlying_stop": 323.04, "qty": 18,
+        "entry_client_order_id": "paca-callmr-open-x", "adopted": None,
+    }
+    adopted_a = {
+        "status": "open", "contract_symbol": "GOOG260918C00330000", "underlying": "GOOG",
+        "signal_date": "2026-08-31", "underlying_stop": 320.0, "qty": 15,
+        "adopted": {"at": "2026-09-01T10:30:43-04:00", "from": "broker"},
+    }
+    adopted_b = {
+        "status": "open", "contract_symbol": "GOOG260918C00327500", "underlying": "GOOG",
+        "signal_date": "2026-08-31", "underlying_stop": 320.0, "qty": 10,
+        "adopted": {"at": "2026-09-01T10:30:43-04:00", "from": "broker"},
+    }
+    return own, adopted_a, adopted_b
+
+
+def test_adopted_duplicates_of_an_issuer_are_identified_and_the_lane_entry_kept():
+    own, adopted_a, adopted_b = _goog_records()
+    records = {r["contract_symbol"]: r for r in (own, adopted_a, adopted_b)}
+    duplicates = mr._adopted_issuer_duplicates(records)
+    assert duplicates == {
+        "GOOG260918C00330000": "GOOG260918C00320000",
+        "GOOG260918C00327500": "GOOG260918C00320000",
+    }
+
+    # GOOG and GOOGL are one issuer.
+    googl = {**own, "contract_symbol": "GOOGL260918C00320000", "underlying": "GOOGL"}
+    records = {r["contract_symbol"]: r for r in (googl, adopted_a)}
+    assert mr._adopted_issuer_duplicates(records) == {
+        "GOOG260918C00330000": "GOOGL260918C00320000",
+    }
+
+    # Two lane-entered positions on one issuer are never closed by this rule.
+    second_own = {**own, "contract_symbol": "GOOG260918C00325000"}
+    records = {r["contract_symbol"]: r for r in (own, second_own)}
+    assert mr._adopted_issuer_duplicates(records) == {}
+
+    # Adopted only: the earliest adoption is kept.
+    earlier = {**adopted_b, "adopted": {"at": "2026-08-31T10:00:00-04:00"}}
+    records = {r["contract_symbol"]: r for r in (adopted_a, earlier)}
+    assert mr._adopted_issuer_duplicates(records) == {
+        "GOOG260918C00330000": "GOOG260918C00327500",
+    }
+    assert mr._adopted_issuer_duplicates({}) == {}
+
+
+def _goog_harness(tmp_path, monkeypatch, records, bids, spot):
+    monkeypatch.setattr(mr.config, "OPTION_MR_STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(mr.config, "OPTION_MR_LOG", tmp_path / "decisions.jsonl")
+    monkeypatch.setattr(mr.config, "OPTION_MR_ENFORCE_ISSUER_LIMIT", True)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_ENABLED", False)
+    mr.save_state({"positions": {r["contract_symbol"]: r for r in records}})
+    calls = []
+    monkeypatch.setattr(mr.mcp_client, "call", lambda tool, **kwargs: (tool, kwargs))
+    monkeypatch.setattr(mr.mcp_client, "call_many", lambda calls_: ("many", calls_))
+
+    def run(call):
+        if call[0] == "many":
+            return [
+                {"quotes": {s: {"bp": b, "ap": b + 0.3} for s, b in bids.items()}},
+                {"quotes": {"GOOG": {"bp": spot, "ap": spot + 0.1}}},
+            ]
+        calls.append(call)
+        return {"status": "accepted"}
+
+    monkeypatch.setattr(mr.mcp_client, "run", run)
+    monkeypatch.setattr(mr, "verify_order", lambda client_id, **_k: {
+        "id": f"o-{client_id}", "status": "accepted", "client_order_id": client_id,
+    })
+    positions = [
+        {"symbol": r["contract_symbol"], "asset_class": "us_option",
+         "qty": str(r["qty"]), "avg_entry_price": "10.0"}
+        for r in records
+    ]
+    return calls, positions
+
+
+def test_issuer_duplicates_are_closed_after_the_opening_rotation(tmp_path, monkeypatch):
+    own, adopted_a, adopted_b = _goog_records()
+    bids = {own["contract_symbol"]: 20.0, adopted_a["contract_symbol"]: 9.0,
+            adopted_b["contract_symbol"]: 11.0}
+    calls, positions = _goog_harness(
+        tmp_path, monkeypatch, (own, adopted_a, adopted_b), bids, 333.0,
+    )
+
+    # Not during the opening rotation.
+    early = datetime(2026, 9, 2, 9, 31, tzinfo=ET)
+    mr.monitor_cycle({"timestamp": early.isoformat(), "is_open": True},
+                     [], positions, {}, True)
+    assert calls == []
+
+    later = datetime(2026, 9, 2, 9, 36, tzinfo=ET)
+    result = mr.monitor_cycle({"timestamp": later.isoformat(), "is_open": True},
+                              [], positions, {}, True)
+    closed = sorted(kw["symbol"] for tool, kw in calls if tool == "place_option_order")
+    assert closed == sorted([adopted_a["contract_symbol"], adopted_b["contract_symbol"]])
+    for _tool, kw in calls:
+        assert kw["position_intent"] == "sell_to_close"
+        assert kw["type"] == "limit"
+        assert kw["limit_price"] == f"{bids[kw['symbol']]:.2f}"
+    state = mr.load_state()["positions"]
+    assert state[own["contract_symbol"]]["status"] == "open"
+    for symbol in (adopted_a["contract_symbol"], adopted_b["contract_symbol"]):
+        assert state[symbol]["status"] == "exit_pending"
+        assert state[symbol]["exit_reason"] == "issuer_concentration"
+        assert state[symbol]["issuer_limit"]["kept"] == own["contract_symbol"]
+    rows = [r for r in _decisions(tmp_path) if r["kind"] == "exit_submitted"]
+    assert {r["reason"] for r in rows} == {"issuer_concentration"}
+    assert {r["kept_position"] for r in rows} == {own["contract_symbol"]}
+    assert sorted(result["managed_contracts"]) == sorted(bids)
+
+    # The escape hatch keeps them.
+    monkeypatch.setattr(mr.config, "OPTION_MR_ENFORCE_ISSUER_LIMIT", False)
+    mr.save_state({"positions": {r["contract_symbol"]: r
+                                 for r in (own, adopted_a, adopted_b)}})
+    calls.clear()
+    mr.monitor_cycle({"timestamp": later.isoformat(), "is_open": True},
+                     [], positions, {}, True)
+    assert calls == []
+
+
+def test_issuer_duplicate_exit_never_pre_empts_the_stop(tmp_path, monkeypatch):
+    """Ordering: the stop and the ratchet are the protective exits; the issuer
+    rule is housekeeping and only applies when neither fired."""
+    own, adopted_a, _ = _goog_records()
+    bids = {own["contract_symbol"]: 5.0, adopted_a["contract_symbol"]: 2.0}
+    _calls, positions = _goog_harness(
+        tmp_path, monkeypatch, (own, adopted_a), bids, 318.0,   # below both stops
+    )
+    mr.monitor_cycle({"timestamp": datetime(2026, 9, 2, 10, 0, tzinfo=ET).isoformat(),
+                      "is_open": True}, [], positions, {}, True)
+    state = mr.load_state()["positions"]
+    assert state[adopted_a["contract_symbol"]]["exit_reason"] == "underlying_stop"
+    assert state[own["contract_symbol"]]["exit_reason"] == "underlying_stop"

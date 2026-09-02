@@ -308,8 +308,17 @@ def decide_exit(
     profit_target: float = config.MONITOR_PROFIT_TARGET_PCT,
     stop_max_loss: float = config.MONITOR_STOP_MAX_LOSS_PCT,
     pin_buffer: float = config.MONITOR_PIN_BUFFER_USD,
+    profit_exits: bool | None = None,
 ) -> tuple[str | None, str]:
-    """Return a deterministic exit action and a human-readable decision."""
+    """Return a deterministic exit action and a human-readable decision.
+
+    ``profit_exits`` False keeps the position to expiry unless the underlying
+    breaches the long strike: the entry gate prices the spread on its terminal
+    payoff, and on a $2-wide spread the profit target and trail were giving
+    back most of that edge in early exits (see MONITOR_PROFIT_EXIT_ENABLED).
+    """
+    if profit_exits is None:
+        profit_exits = config.MONITOR_PROFIT_EXIT_ENABLED
     if not market_open:
         return None, "market_closed"
     if not metrics.get("quote_ready") or metrics.get("spot", 0) <= 0:
@@ -329,10 +338,10 @@ def decide_exit(
             f"projected daily P&L ${projected_daily:.2f} >= ${daily_target:.2f} target"
         )
 
-    if metrics["profit_captured"] >= profit_target:
+    if profit_exits and metrics["profit_captured"] >= profit_target:
         return "profit_target", f"captured {metrics['profit_captured']:.1%} of credit"
 
-    if metrics.get("ratchet_exit"):
+    if profit_exits and metrics.get("ratchet_exit"):
         volatility = "high-volatility " if metrics.get("pnl_volatility_high") else ""
         return "profit_ratchet", (
             f"{volatility}profit trail: executable ${metrics.get('pnl_executable', 0):+.2f} "
@@ -366,7 +375,7 @@ def decide_exit(
         return "long_strike_breach", "underlying moved beyond protective long strike"
     if metrics["loss_used"] >= stop_max_loss:
         return "stop_loss", f"used {metrics['loss_used']:.1%} of defined max loss"
-    return None, "hold"
+    return None, "hold" if profit_exits else "hold_to_expiry"
 
 
 def spread_metrics(

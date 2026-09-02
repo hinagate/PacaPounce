@@ -21,6 +21,13 @@ from . import config, ratchet
 ET = ZoneInfo("America/New_York")
 STATE_VERSION = "1.0.0"
 
+# A spread marked to the penny flickers by a tick or two between samples
+# without the underlying doing anything. Dispersion inside this many ticks
+# (per contract, in dollars) is quote noise, not a fast tape, and must not
+# tighten the trail: the live SPY spread showed 0.033 "volatility" on a
+# 3-cent range while the index was flat.
+TICK_NOISE_MULTIPLE = 1.5
+
 
 def _state_path(path: Path | None = None) -> Path:
     return path or config.RISK_STATE_FILE
@@ -159,6 +166,7 @@ def observe(
         high_water=float(position.get("high_water_pnl") or 0.0),
         policy=spread_policy(),
         quote_ready=bool(metrics.get("quote_ready")),
+        noise_pnl=TICK_NOISE_MULTIPLE * 0.01 * 100 * float(spread.get("qty") or 0),
     )
 
     position.update({

@@ -120,6 +120,18 @@ MONITOR_VOL_WINDOW_SAMPLES = int(os.getenv("PACAPOUNCE_MONITOR_VOL_WINDOW_SAMPLE
 MONITOR_HIGH_VOL_PCT_MAX_PROFIT = float(
     os.getenv("PACAPOUNCE_MONITOR_HIGH_VOL_PCT_MAX_PROFIT", "0.03")
 )
+# Whether the credit-spread monitor takes profit early at all. The entry gate
+# prices a spread on its terminal payoff; the 50% target and the ratchet then
+# deliver about a quarter of that on a win while a long-strike breach costs the
+# same either way. Simulated on the live SPY 770/772C (3 sessions, 30 s marks,
+# realised vol at the gate's own VRP assumption) every early-exit configuration
+# was negative expectancy and hold-to-expiry with the breach exit was positive,
+# so the profit exits are a switch rather than a constant. Off, the monitor
+# keeps the long-strike breach, the defined-loss stop and the expiry pin-risk
+# exit: the protection stays, the truncation of the win does not.
+MONITOR_PROFIT_EXIT_ENABLED = os.getenv(
+    "PACAPOUNCE_MONITOR_PROFIT_EXIT_ENABLED", "true"
+).lower() in {"1", "true", "yes", "on"}
 
 # A profitable exit may earn one new attempt, but only after the market has had
 # time to reset and only if the new post-cost EV per defined-risk dollar is
@@ -226,12 +238,12 @@ OPTION_MR_PROFIT_EXIT_ENABLED = os.getenv(
 # earned the move it was bought for and then handed it back. The ratchet exists
 # for that case only.
 #
-# Once a position has captured ARM_PCT of the premium paid, its executable
-# high-water mark is trailed by GIVEBACK_PCT of the gain. Because arming
-# requires a positive capture, the trailing floor is always above breakeven -
-# the invariant is asserted explicitly so no configuration can break it.
-# Elevated P&L volatility tightens the trail rather than closing by itself, and
-# a close needs CONFIRMATIONS consecutive breaches so one bad quote cannot exit.
+# Once a position has armed, its executable high-water mark is trailed by
+# GIVEBACK_PCT of the gain. The trailing floor is clamped at breakeven, and once
+# armed a confirmed mark at or below it closes the position whatever its sign:
+# a gap through the floor is a breach, not an exemption from one. Elevated P&L
+# volatility tightens the trail rather than closing by itself, and a close
+# needs CONFIRMATIONS consecutive breaches so one bad quote cannot exit.
 OPTION_MR_RATCHET_ENABLED = os.getenv(
     "PACAPOUNCE_OPTION_MR_RATCHET_ENABLED", "true"
 ).lower() in {"1", "true", "yes", "on"}
@@ -269,6 +281,42 @@ OPTION_MR_RATCHET_VOL_SAMPLES = int(
 OPTION_MR_RATCHET_HIGH_VOL_PCT = float(
     os.getenv("PACAPOUNCE_OPTION_MR_RATCHET_HIGH_VOL_PCT", "0.03")
 )
+# Volatility is measured in the arm threshold's units: the dispersion of the
+# last VOL_SAMPLES marks over the P&L of a one-ATR move in the underlying. As a
+# share of premium the flag depended on leverage - in the same INTC minutes the
+# 85C read 0.033 and the 80C 0.020 - so it tightened one trail and not the
+# other. At 30 s sampling a normal tape sits near 0.02 of an ATR move with a
+# 95th percentile near 0.04, which is the default. The premium share above is
+# the fallback for a position with no usable ATR or delta.
+OPTION_MR_RATCHET_HIGH_VOL_ATR = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_RATCHET_HIGH_VOL_ATR", "0.04")
+)
+if OPTION_MR_RATCHET_HIGH_VOL_ATR <= 0:
+    raise ValueError("PACAPOUNCE_OPTION_MR_RATCHET_HIGH_VOL_ATR must be positive")
+# A close is a day limit at the live bid. Marketable when sent, it can still
+# miss when the bid moves in the second between quote and order - and the stop
+# fires on exactly the tape where that happens. Left alone the order sat until
+# the close and the position was unprotected for the rest of the day. Unfilled
+# for this long it is cancelled and re-sent at the fresh bid; after this many
+# chases it goes at market, because a stop that is not filled protects nothing.
+OPTION_MR_EXIT_CHASE_AFTER_SEC = int(
+    os.getenv("PACAPOUNCE_OPTION_MR_EXIT_CHASE_AFTER_SEC", "20")
+)
+OPTION_MR_EXIT_MARKET_AFTER_CHASES = int(
+    os.getenv("PACAPOUNCE_OPTION_MR_EXIT_MARKET_AFTER_CHASES", "2")
+)
+if OPTION_MR_EXIT_CHASE_AFTER_SEC < 0 or OPTION_MR_EXIT_MARKET_AFTER_CHASES < 1:
+    raise ValueError(
+        "PACAPOUNCE_OPTION_MR_EXIT_CHASE_AFTER_SEC must be non-negative and "
+        "PACAPOUNCE_OPTION_MR_EXIT_MARKET_AFTER_CHASES at least one"
+    )
+# The lane holds one position per issuer (GOOG and GOOGL are one issuer). A
+# position adopted from outside the lane can break that; when it does, the
+# adopted duplicate is closed after the opening rotation, because the
+# concentration was never the lane's choice and doubling it is not a thesis.
+OPTION_MR_ENFORCE_ISSUER_LIMIT = os.getenv(
+    "PACAPOUNCE_OPTION_MR_ENFORCE_ISSUER_LIMIT", "true"
+).lower() in {"1", "true", "yes", "on"}
 if OPTION_MR_RATCHET_ARM_PCT <= 0:
     raise ValueError("PACAPOUNCE_OPTION_MR_RATCHET_ARM_PCT must be positive")
 for _name, _value in (
@@ -356,8 +404,18 @@ if OPTION_MR_SIZING_MODE not in {"risk_budget", "tournament"}:
 OPTION_MR_TOURNAMENT = OPTION_MR_SIZING_MODE == "tournament"
 if not 0 < OPTION_MR_EQUITY_RISK_PCT <= 0.02:
     raise ValueError("PACAPOUNCE_OPTION_MR_EQUITY_RISK_PCT must be in (0, 0.02]")
-# In tournament mode the modeled-stop risk budget is not the sizing input, so
-# the premium budgets below are the only thing bounding a position.
+# In tournament mode the premium budget buys the upper tail, but what a
+# position puts at its 2xATR stop is delta x 2 x ATR x 100 per contract: 54%
+# of premium at delta 0.8 and about all of it at delta 0.6. Sized on premium
+# alone, two positions of equal cost risked 18% and 37% of equity. This caps
+# the modeled stop loss of one position so the risk taken does not depend on
+# which delta the chain happened to offer. The 0.5% risk budget above stays
+# the risk_budget-mode input and is far inside this cap.
+OPTION_MR_MAX_STOP_RISK_PCT = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_MAX_STOP_RISK_PCT", "0.15")
+)
+if not 0 < OPTION_MR_MAX_STOP_RISK_PCT <= 1:
+    raise ValueError("PACAPOUNCE_OPTION_MR_MAX_STOP_RISK_PCT must be in (0, 1]")
 if not OPTION_MR_EQUITY_RISK_PCT <= OPTION_MR_ONE_CONTRACT_RISK_CAP_PCT <= 0.02:
     raise ValueError(
         "PACAPOUNCE_OPTION_MR_ONE_CONTRACT_RISK_CAP_PCT must be between the "

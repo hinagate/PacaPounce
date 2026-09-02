@@ -18,10 +18,15 @@ abstraction.
 
 Two invariants hold for every caller:
 
-* A breach requires ``pnl > 0``, so a ratchet close is always taken in profit.
-  Losses are the stop's job, never this one's.
 * The trailing floor is clamped at zero and the giveback is validated below 1,
-  so a position that has been right can never be trailed back into a loss.
+  so a position that has been right is never *trailed* into a loss: the level
+  it is protected at always sits at or above breakeven.
+* Once armed, a confirmed mark at or below that floor closes the position
+  whatever its sign. A gap through the floor is still a breach. An earlier form
+  of this rule required ``pnl > 0`` for a breach, which meant a mark that
+  jumped from above the floor to below zero was never a breach at all and an
+  armed winner was silently handed back to the 2xATR stop - the one failure the
+  ratchet exists to prevent. A position that never armed is the stop's job.
 """
 from __future__ import annotations
 
@@ -77,7 +82,8 @@ def _dispersion(history: list[float], mode: str) -> float:
 
 def update(*, pnl: float | None, denominator: float, history: list[float],
            breach_count: int, policy: Policy, quote_ready: bool = True,
-           high_water: float = 0.0, arm_threshold: float | None = None) -> dict:
+           high_water: float = 0.0, arm_threshold: float | None = None,
+           volatility_scale: float | None = None, noise_pnl: float = 0.0) -> dict:
     """Advance one position's ratchet by a single executable mark.
 
     ``pnl`` is measured at the price the position could actually be closed at -
@@ -96,6 +102,13 @@ def update(*, pnl: float | None, denominator: float, history: list[float],
     capital committed. A long option's P&L moves by its leverage, which varies
     several-fold between contracts, so a fixed share of premium asks for a
     different underlying move from each one.
+
+    ``volatility_scale`` is the same idea for the volatility test: what the
+    dispersion of marks is measured against. It defaults to ``denominator``.
+    ``noise_pnl`` is the dispersion a position shows from quote granularity
+    alone; at or below it the tape is not volatile, it is merely quoted in
+    ticks. A $0.30 credit spread quoted in cents cannot move by less than 3% of
+    its maximum profit, so without this floor every tick read as disorder.
     """
     series = [float(value) for value in history]
     if pnl is not None:
@@ -132,8 +145,11 @@ def update(*, pnl: float | None, denominator: float, history: list[float],
     armed = peak >= threshold
 
     dispersion = _dispersion(series, policy.volatility_mode)
-    volatility_ratio = dispersion / scale
-    high_volatility = volatility_ratio >= policy.high_vol_pct
+    vol_scale = max(volatility_scale, 0.01) if volatility_scale else scale
+    volatility_ratio = dispersion / vol_scale
+    high_volatility = (
+        dispersion > max(noise_pnl, 0.0) and volatility_ratio >= policy.high_vol_pct
+    )
     giveback = (
         policy.high_vol_giveback_pct if high_volatility else policy.giveback_pct
     )
@@ -143,9 +159,10 @@ def update(*, pnl: float | None, denominator: float, history: list[float],
     # Do not close into a still-rising position: a dip that is already being
     # bought back is not a giveback.
     slope_nonpositive = len(series) >= 3 and series[-1] <= series[-3]
+    # No sign test on the mark: a quote that gapped from above the floor to
+    # below zero is the breach the floor exists for, not an exemption from it.
     below_floor = (
         armed
-        and pnl > 0                 # a ratchet close is always taken in profit
         and pnl <= trailing_floor
         and slope_nonpositive
         and quote_ready

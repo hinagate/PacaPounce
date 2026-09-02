@@ -123,6 +123,7 @@ def test_profit_target_uses_executable_capture():
         _metrics(profit_captured=0.50),
         datetime(2026, 8, 25, 12, 0, tzinfo=ET),
         True,
+        profit_exits=True,
     )
     assert action == "profit_target"
 
@@ -138,9 +139,42 @@ def test_profit_ratchet_closes_only_after_persistent_policy_trigger():
         ),
         datetime(2026, 8, 25, 12, 0, tzinfo=ET),
         True,
+        profit_exits=True,
     )
     assert action == "profit_ratchet"
     assert "$897.00 high" in decision
+
+
+def test_profit_exits_off_holds_to_expiry_but_keeps_the_breach(monkeypatch):
+    """The entry gate prices the spread on its terminal payoff; on a $2-wide
+    spread the 50% target and the trail were closing the winners early and
+    leaving the losers to the breach, which made the configured monitor
+    negative-EV (simulated -$520 vs +$587 hold-to-expiry with breach)."""
+    now = datetime(2026, 8, 25, 12, 0, tzinfo=ET)
+    winner = _metrics(
+        profit_captured=0.80, pnl_executable=690.0, ratchet_exit=True,
+        ratchet_trailing_floor_pnl=717.60, ratchet_high_water_pnl=897.0,
+    )
+    action, decision = decide_exit(winner, now, True, profit_exits=False)
+    assert action is None
+    assert decision == "hold_to_expiry"
+
+    # The defined-risk protections are not profit exits and stay armed.
+    action, _ = decide_exit(_metrics(spot=750.5), now, True, profit_exits=False)
+    assert action == "long_strike_breach"
+    action, _ = decide_exit(_metrics(loss_used=0.70), now, True, profit_exits=False)
+    assert action == "stop_loss"
+    action, _ = decide_exit(
+        _metrics(is_expiry_day=True, spot=754.0),
+        datetime(2026, 8, 28, 15, 35, tzinfo=ET), True, profit_exits=False,
+    )
+    assert action == "pin_risk"
+
+    # The switch defaults to the configured value.
+    monkeypatch.setattr(config, "MONITOR_PROFIT_EXIT_ENABLED", False)
+    assert decide_exit(winner, now, True) == (None, "hold_to_expiry")
+    monkeypatch.setattr(config, "MONITOR_PROFIT_EXIT_ENABLED", True)
+    assert decide_exit(winner, now, True)[0] == "profit_target"
 
 
 def test_non_expiry_stop_and_long_strike_breach():

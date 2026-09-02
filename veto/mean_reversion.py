@@ -196,8 +196,11 @@ def option_position_size(equity: float, options_buying_power: float,
     ``tournament`` sizes from the premium budget instead. A four-session P&L
     leaderboard rewards the upper tail rather than expected value, and a long
     call is the only structure here with upside convexity. The objective change
-    is explicit rather than smuggled in by inflating the risk budget: the
-    modeled stop is still computed and recorded, it just is not the input.
+    is explicit rather than smuggled in by inflating the risk budget. The
+    modeled stop still binds, through ``OPTION_MR_MAX_STOP_RISK_PCT``: sized on
+    premium alone, what a position risked at its stop swung with the delta the
+    chain happened to offer (54% of premium at 0.8, about all of it at 0.6),
+    which is a risk decision made by the chain rather than by the policy.
     In both modes the full premium paid remains the legal maximum loss.
     """
     premium_per_contract = premium * 100
@@ -215,6 +218,7 @@ def option_position_size(equity: float, options_buying_power: float,
         "one_contract_risk_cap": round(equity * config.OPTION_MR_ONE_CONTRACT_RISK_CAP_PCT, 2),
         "premium_cap": round(budget, 2),
         "position_premium_cap": round(position_cap, 2),
+        "stop_risk_cap": round(equity * config.OPTION_MR_MAX_STOP_RISK_PCT, 2),
         "discrete_one_contract": False,
     }
     if min(equity, options_buying_power, premium_per_contract, modeled_stop_loss) <= 0:
@@ -223,8 +227,10 @@ def option_position_size(equity: float, options_buying_power: float,
     by_broker = math.floor(options_buying_power / premium_per_contract)
     by_premium = math.floor(budget / premium_per_contract)
     if config.OPTION_MR_TOURNAMENT:
-        qty = max(0, min(by_premium, by_broker, config.MAX_CONTRACTS))
-        return {**base, "contracts": qty}
+        by_stop_risk = math.floor(base["stop_risk_cap"] / modeled_stop_loss)
+        qty = max(0, min(by_premium, by_broker, by_stop_risk, config.MAX_CONTRACTS))
+        return {**base, "contracts": qty, "by_premium": by_premium,
+                "by_stop_risk": by_stop_risk}
 
     by_risk = math.floor(
         equity * config.OPTION_MR_EQUITY_RISK_PCT / modeled_stop_loss
@@ -241,18 +247,25 @@ def option_position_size(equity: float, options_buying_power: float,
     return {**base, "contracts": qty, "discrete_one_contract": discrete_one_contract}
 
 
-def call_ratchet_policy() -> ratchet.Policy:
+def call_ratchet_policy(atr_units: bool = False) -> ratchet.Policy:
     """Long-call thresholds, measured against the premium paid.
 
     A long call's P&L swings with delta rather than grinding, so the dispersion
     of its levels is what identifies a fast tape. Its giveback is looser than a
     spread's for the same reason: the same underlying move moves it much further.
+
+    With ``atr_units`` the volatility threshold is read against the P&L of a
+    one-ATR move (see ``ratchet_vol_scale``) instead of the premium; the caller
+    chooses that whenever the position has a usable ATR and delta.
     """
     return ratchet.Policy(
         arm_pct=config.OPTION_MR_RATCHET_ARM_PCT,
         giveback_pct=config.OPTION_MR_RATCHET_GIVEBACK_PCT,
         high_vol_giveback_pct=config.OPTION_MR_RATCHET_HIGH_VOL_GIVEBACK_PCT,
-        high_vol_pct=config.OPTION_MR_RATCHET_HIGH_VOL_PCT,
+        high_vol_pct=(
+            config.OPTION_MR_RATCHET_HIGH_VOL_ATR if atr_units
+            else config.OPTION_MR_RATCHET_HIGH_VOL_PCT
+        ),
         confirmations=config.OPTION_MR_RATCHET_CONFIRMATIONS,
         history_limit=max(config.OPTION_MR_RATCHET_VOL_SAMPLES, 3),
         volatility_mode="levels",
@@ -294,9 +307,23 @@ def ratchet_arm_threshold(atr: float, delta: float, qty: float) -> float | None:
     return config.OPTION_MR_RATCHET_ARM_ATR * atr * abs(delta) * qty * 100
 
 
+def ratchet_vol_scale(atr: float, delta: float, qty: float) -> float | None:
+    """P&L that a one-ATR move in the underlying would produce.
+
+    The denominator for the volatility flag, so "fast tape" means the same
+    underlying behaviour for every contract. As a share of premium the same
+    dispersion read 0.033 on a 0.59-delta call and 0.020 on a 0.77-delta call
+    of the same stock in the same minutes.
+    """
+    if atr <= 0 or delta <= 0 or qty <= 0:
+        return None
+    return atr * abs(delta) * qty * 100
+
+
 def ratchet_update(state: dict | None, executable_pnl: float | None,
                    premium_paid: float, quote_ready: bool = True,
-                   arm_threshold: float | None = None) -> dict:
+                   arm_threshold: float | None = None,
+                   volatility_scale: float | None = None) -> dict:
     """Advance the long call's profit ratchet by one executable mark."""
     previous = dict(state or {})
     if not config.OPTION_MR_RATCHET_ENABLED:
@@ -309,9 +336,10 @@ def ratchet_update(state: dict | None, executable_pnl: float | None,
         history=previous.get("samples") or [],
         breach_count=int(previous.get("breaches") or 0),
         high_water=_f(previous.get("high_water_pnl")),
-        policy=call_ratchet_policy(),
+        policy=call_ratchet_policy(atr_units=volatility_scale is not None),
         quote_ready=quote_ready,
         arm_threshold=arm_threshold,
+        volatility_scale=volatility_scale,
     )
     return {
         "armed": result["armed"],
@@ -1082,6 +1110,11 @@ def _open_one_call(state: dict, snapshot, candidate: dict, contract: dict,
                f"${sizing['modeled_stop_loss_per_contract'] * qty:,.2f}"),
         _check("premium_cap", premium_total <= sizing["premium_cap"],
                f"premium ${premium_total:,.2f} <= budget ${sizing['premium_cap']:,.2f}"),
+        _check("stop_risk_cap",
+               sizing["modeled_stop_loss_per_contract"] * qty <= sizing["stop_risk_cap"],
+               f"modeled 2xATR loss ${sizing['modeled_stop_loss_per_contract'] * qty:,.2f} "
+               f"<= {config.OPTION_MR_MAX_STOP_RISK_PCT:.0%} of equity "
+               f"${sizing['stop_risk_cap']:,.2f}"),
         _check("broker_buying_power", premium_total <= options_bp,
                f"premium ${premium_total:,.2f} <= live options BP ${options_bp:,.2f}"),
         _check("underlying_hard_stop", 0 < stop_price < candidate["price"],
@@ -1258,6 +1291,71 @@ def _pending_close(contract_symbol: str, open_orders: list[dict]) -> bool:
     )
 
 
+def _stale_exit_order(record: dict, contract_symbol: str,
+                      open_orders: list[dict], now_et: datetime) -> dict | None:
+    """This record's own close order, if it is still open past its grace.
+
+    Only an order carrying the record's client id is ever chased; a close
+    somebody else placed on the same contract is left alone.
+    """
+    submitted = _timestamp(record.get("exit_submitted_at"))
+    if submitted is None:
+        return None
+    if (now_et - submitted).total_seconds() < config.OPTION_MR_EXIT_CHASE_AFTER_SEC:
+        return None
+    requested = _timestamp(record.get("exit_cancel_requested_at"))
+    if requested is not None and (
+        (now_et - requested).total_seconds() < 2 * config.OPTION_MR_EXIT_CHASE_AFTER_SEC
+    ):
+        return None                      # cancellation already in flight
+    wanted = str(record.get("exit_client_order_id") or "").lower()
+    for order in open_orders:
+        if (
+            wanted
+            and str(order.get("symbol") or "").upper() == contract_symbol
+            and str(order.get("client_order_id") or "").lower() == wanted
+            and order.get("id")
+        ):
+            return order
+    return None
+
+
+# Adopted duplicates are not closed into the opening rotation's quotes.
+ISSUER_LIMIT_EXIT_AFTER = wall_time(9, 35)
+
+
+def _adopted_issuer_duplicates(open_records: dict[str, dict]) -> dict[str, str]:
+    """Adopted positions that break the one-position-per-issuer design.
+
+    Maps each duplicate to the position kept. A position the lane entered
+    itself is never closed by this rule; among adopted positions the earliest
+    adoption is kept only when the issuer has no lane-entered position at all.
+    """
+    by_issuer: dict[str, list[str]] = {}
+    for symbol, record in open_records.items():
+        issuer = _issuer(str(record.get("underlying") or "").upper())
+        by_issuer.setdefault(issuer, []).append(symbol)
+
+    def adopted_at(symbol: str) -> str:
+        adopted = open_records[symbol].get("adopted")
+        return str(adopted.get("at") or "") if isinstance(adopted, dict) else ""
+
+    duplicates: dict[str, str] = {}
+    for members in by_issuer.values():
+        if len(members) < 2:
+            continue
+        own = sorted(s for s in members if not open_records[s].get("adopted"))
+        adopted = sorted(
+            (s for s in members if open_records[s].get("adopted")),
+            key=lambda s: (adopted_at(s), s),
+        )
+        keep = own[0] if own else adopted[0]
+        for symbol in adopted:
+            if symbol != keep:
+                duplicates[symbol] = keep
+    return duplicates
+
+
 def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
                   account: dict, execute: bool) -> dict:
     """Reconcile managed long calls and submit deterministic option exits."""
@@ -1331,6 +1429,32 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
             events.append(event)
         elif broker_position and status == "exit_pending":
             if _pending_close(contract_symbol, open_orders):
+                stale = _stale_exit_order(record, contract_symbol, open_orders, now_et)
+                if stale is not None and execute:
+                    # A close that has not filled protects nothing. Cancel it
+                    # here; the next cycle sees the cancellation, returns the
+                    # record to ``open`` and re-decides at the fresh bid.
+                    cancel = mcp_client.run(mcp_client.call(
+                        "cancel_order_by_id", order_id=stale["id"],
+                    ))
+                    age = (now_et - _timestamp(record.get("exit_submitted_at"))).total_seconds()
+                    if isinstance(cancel, dict) and cancel.get("error"):
+                        events.append(log(
+                            "exit_chase_failed", contract_symbol=contract_symbol,
+                            underlying=record.get("underlying"),
+                            reason=record.get("exit_reason"), broker_order_id=stale["id"],
+                            response=cancel,
+                        ))
+                    else:
+                        record["exit_chases"] = int(record.get("exit_chases") or 0) + 1
+                        record["exit_cancel_requested_at"] = now_et.isoformat()
+                        events.append(log(
+                            "exit_chase", contract_symbol=contract_symbol,
+                            underlying=record.get("underlying"),
+                            reason=record.get("exit_reason"), chases=record["exit_chases"],
+                            stale_limit=record.get("exit_limit"), age_sec=round(age, 1),
+                            broker_order_id=stale["id"],
+                        ))
                 continue
             signal_date = str(record.get("signal_date") or now_et.date().isoformat())
             try:
@@ -1344,6 +1468,10 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
             broker_status = str((broker_order or {}).get("status") or "").lower().split(".")[-1]
             if broker_status in FAILED_ORDER_STATES:
                 record.update({"status": "open", "exit_client_order_id": None})
+                if not record.get("exit_cancel_requested_at"):
+                    # The broker ended it (expired at the close, rejected),
+                    # not a chase: the next attempt starts fresh.
+                    record["exit_chases"] = 0
                 events.append(log(
                     "exit_not_filled", contract_symbol=contract_symbol,
                     underlying=record.get("underlying"), broker_status=broker_status,
@@ -1360,6 +1488,10 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
         symbol: record for symbol, record in managed.items()
         if record.get("status") == "open" and symbol in positions
     }
+    issuer_duplicates = (
+        _adopted_issuer_duplicates(open_records)
+        if config.OPTION_MR_ENFORCE_ISSUER_LIMIT else {}
+    )
     option_quotes = {}
     spots = {}
     if bool(clock.get("is_open")) and open_records:
@@ -1397,6 +1529,9 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
             arm_threshold=ratchet_arm_threshold(
                 _f(record.get("atr14")), _f(record.get("delta")), qty,
             ),
+            volatility_scale=ratchet_vol_scale(
+                _f(record.get("atr14")), _f(record.get("delta")), qty,
+            ),
         )
         record["ratchet"] = ratchet_state
 
@@ -1404,6 +1539,16 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
             reason = "underlying_stop"
         elif ratchet_state.get("close"):
             reason = ratchet_state["reason"]
+        elif (
+            contract_symbol in issuer_duplicates
+            and bool(clock.get("is_open"))
+            and now_et.time() >= ISSUER_LIMIT_EXIT_AFTER
+        ):
+            reason = "issuer_concentration"
+            record["issuer_limit"] = {
+                "kept": issuer_duplicates[contract_symbol],
+                "decided_at": now_et.isoformat(),
+            }
         elif normal_window and record.get("last_exit_check_date") != now_et.date().isoformat():
             signals, errors = fetch_signals([underlying], now_et)
             signal = signals[0] if signals else None
@@ -1465,16 +1610,29 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
             continue
 
         exit_limit = round(option_quote["bid"], 2)
+        previous_exit = _timestamp(record.get("exit_submitted_at"))
+        chases = (
+            int(record.get("exit_chases") or 0)
+            if previous_exit is not None and previous_exit.date() == now_et.date()
+            else 0                       # chases count within one session
+        )
+        # Two limits that did not fill are the tape saying the bid will not
+        # hold still; the next attempt takes whatever is there.
+        order_type = (
+            "market" if chases >= config.OPTION_MR_EXIT_MARKET_AFTER_CHASES else "limit"
+        )
         client_order_id = (
             f"{EXIT_PREFIX}{now_et.strftime('%Y%m%d')}-"
             f"{underlying.lower()}-{uuid.uuid4().hex[:6]}"
         )
-        response = mcp_client.run(mcp_client.call(
-            "place_option_order", symbol=contract_symbol, side="sell",
-            position_intent="sell_to_close", qty=f"{qty:g}", type="limit",
-            time_in_force="day", limit_price=f"{exit_limit:.2f}",
+        order_request = dict(
+            symbol=contract_symbol, side="sell", position_intent="sell_to_close",
+            qty=f"{qty:g}", type=order_type, time_in_force="day",
             client_order_id=client_order_id,
-        ))
+        )
+        if order_type == "limit":
+            order_request["limit_price"] = f"{exit_limit:.2f}"
+        response = mcp_client.run(mcp_client.call("place_option_order", **order_request))
         broker_order = verify_order(client_order_id)
         if not broker_submission_confirmed(broker_order):
             events.append(log(
@@ -1489,16 +1647,22 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
             "exit_client_order_id": client_order_id,
             "exit_broker_order_id": broker_order.get("id"),
             "exit_submitted_at": now_et.isoformat(),
-            "exit_limit": exit_limit,
+            "exit_chases": chases,
+            "exit_cancel_requested_at": None,
+            "exit_limit": exit_limit if order_type == "limit" else None,
+            "exit_order_type": order_type,
             "exit_trigger_pnl": executable_pnl,
         })
         events.append(log(
             "exit_submitted", contract_symbol=contract_symbol,
-            underlying=underlying, reason=reason, qty=qty,
-            limit_price=exit_limit, executable_pnl=executable_pnl,
+            underlying=underlying, reason=reason, qty=qty, order_type=order_type,
+            limit_price=exit_limit if order_type == "limit" else None,
+            executable_bid=exit_limit, chases=chases, executable_pnl=executable_pnl,
             client_order_id=client_order_id, broker_order_id=broker_order.get("id"),
             underlying_price=round(spot, 4),
             underlying_stop=_f(record.get("underlying_stop")),
+            kept_position=(record.get("issuer_limit") or {}).get("kept")
+            if reason == "issuer_concentration" else None,
             **ratchet_evidence(record.get("ratchet")),
         ))
 
