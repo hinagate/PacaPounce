@@ -610,7 +610,18 @@ def exit_block(exit_evidence: dict | None) -> str:
 {broker_note}"""
 
 
-def build(live: bool = True, output: Path | None = None) -> Path:
+def build(live: bool = True, output: Path | None = None,
+          published: bool = False) -> Path:
+    """Render the dashboard.
+
+    ``published`` renders a frozen copy for static hosting. The runtime page
+    refreshes itself every minute because it is watched on a desktop beside a
+    running agent; served from GitHub Pages that meta-refresh throws away the
+    reader's scroll position every minute, the reload button does nothing, and
+    "auto-reload 60s" claims live data for numbers that stopped moving when the
+    file was written. A published page says what it is instead: a snapshot,
+    with the account it can be checked against.
+    """
     destination = output or OUT
     if not destination.is_absolute():
         destination = ROOT / destination
@@ -899,10 +910,32 @@ evidence and are never mixed into competition P&amp;L.</div>"""
             "exits are recorded as <code>hold_to_expiry</code> in the session log."
         )
 
+    if published:
+        refresh_meta = ""
+        refresh_button = (
+            '<div class="note">This is a frozen snapshot, not a live feed. Every figure '
+            f'above is read-only broker state for Alpaca paper account '
+            f'<code>{config.ALPACA_ACCOUNT_ID}</code> at the timestamp shown, and can be '
+            'verified against that account directly.</div>'
+        )
+        snapshot_line = f"Snapshot taken {built_at} ET · published copy, not auto-updating"
+    else:
+        refresh_meta = (
+            f'<meta http-equiv="refresh" content="{config.DASHBOARD_REFRESH_INTERVAL_SEC}">'
+        )
+        refresh_button = (
+            '<button class="refresh-btn" type="button" onclick="window.location.reload()">'
+            'Reload latest broker snapshot</button>'
+        )
+        snapshot_line = (
+            f"Snapshot generated {built_at} ET · "
+            f"auto-reload {config.DASHBOARD_REFRESH_INTERVAL_SEC}s"
+        )
+
     html = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="{config.DASHBOARD_REFRESH_INTERVAL_SEC}">
+{refresh_meta}
 <title>PacaPounce - Patient AI Trading Agent</title><style>{CSS}</style></head><body><div class="wrap">
 
 <h1>PacaPounce</h1>
@@ -914,8 +947,8 @@ independently validated policy is allowed to touch the broker. Gate {summary.get
 <section aria-labelledby="live-overview">
 <div class="overview-head"><div><h2 id="live-overview">Live account overview</h2>
 <p>Read-only broker state and the newest bounded decision windows.</p></div>
-<p>Snapshot generated {built_at} ET · auto-reload {config.DASHBOARD_REFRESH_INTERVAL_SEC}s</p></div>
-<button class="refresh-btn" type="button" onclick="window.location.reload()">Reload latest broker snapshot</button>
+<p>{snapshot_line}</p></div>
+{refresh_button}
 
 <h3 style="font-size:14px;margin:0 0 8px">Account</h3>
 <div class="simple-table"><table><thead><tr><th>Metric</th><th>Value</th></tr></thead>
@@ -1190,6 +1223,10 @@ if __name__ == "__main__":
     ap.add_argument("--no-live", action="store_true", help="skip the Alpaca P&L fetch")
     ap.add_argument("--watch", action="store_true", help="rebuild until interrupted")
     ap.add_argument(
+        "--published", action="store_true",
+        help="frozen copy for static hosting: no meta-refresh, no reload button",
+    )
+    ap.add_argument(
         "--output", type=Path,
         help="output path; default dashboard/runtime/index.html is gitignored",
     )
@@ -1201,7 +1238,7 @@ if __name__ == "__main__":
     interval = max(10, a.interval)
     try:
         while True:
-            p = build(live=not a.no_live, output=a.output)
+            p = build(live=not a.no_live, output=a.output, published=a.published)
             print(f"wrote {p} ({p.stat().st_size:,} bytes)", flush=True)
             if not a.watch:
                 break
