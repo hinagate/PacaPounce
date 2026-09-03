@@ -580,6 +580,16 @@ def exit_block(exit_evidence: dict | None) -> str:
     status_cls = "pos" if status == "FILLED" else "neg"
     close_debit = e.get("close_debit")
     close_debit_text = f"${float(close_debit):.2f}" if close_debit is not None else "-"
+    locked = e.get("realized_gross_pnl")
+    locked_cls = "neg" if isinstance(locked, (int, float)) and locked < 0 else "pos"
+    # Name the position, so one closed trade is not read as the account result.
+    locked_what = (
+        f"{esc(e.get('underlying'))} "
+        f"{str(e.get('short_symbol') or '')[-8:-3].lstrip('0')}/"
+        f"{str(e.get('long_symbol') or '')[-8:-3].lstrip('0')} "
+        f"x{esc(e.get('qty'))}, this position only"
+        if e.get("long_symbol") else "this position only"
+    )
     filled_qty = e.get("filled_qty") or "-"
     reason_detail = (
         f"Executable P&amp;L first reached a {money(e.get('high_water_pnl'))} high-water. "
@@ -608,8 +618,9 @@ def exit_block(exit_evidence: dict | None) -> str:
     <div class="f">{esc(filled_qty)}/{esc(e.get('qty'))} spread contracts</div></div>
   <div class="tile"><div class="k">Closing debit</div><div class="v">{close_debit_text}</div>
     <div class="f">atomic two-leg average fill</div></div>
-  <div class="tile"><div class="k">Gross locked P&amp;L</div><div class="v pos">{money(e.get('realized_gross_pnl'))}</div>
-    <div class="f">before broker fees</div></div>
+  <div class="tile"><div class="k">Gross locked P&amp;L</div>
+    <div class="v {locked_cls}">{money(locked)}</div>
+    <div class="f">{locked_what}, before broker fees</div></div>
   <div class="tile"><div class="k">Filled at</div><div class="v" style="font-size:14px">{esc(e.get('filled_at'))}</div>
     <div class="f">Alpaca broker timestamp</div></div>
 </div>
