@@ -9,6 +9,14 @@
 
 **The patient AI trading agent: it hunts, verifies, then pounces.**
 
+> **Disclaimer:** PacaPounce is an experimental prototype built and stress-tested
+> for one week in an Alpaca paper-trading hackathon. Any favorable paper result
+> is not evidence of future performance. This project is not financial advice
+> and should not be connected to a live brokerage account or used with real
+> money without independent review, validation, and appropriate safeguards.
+> You are solely responsible for any use of this software and assume all
+> resulting risk.
+
 Built for the Alpaca AI Trading Agents Hackathon. The LLM is creative but untrusted:
 it can suggest any options thesis it likes, but only deterministic, independently
 tested policy is allowed to touch the broker.
