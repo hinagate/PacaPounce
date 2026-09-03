@@ -84,7 +84,8 @@ flowchart LR
 `NDX30_CALL_MR_01` is not a free-form LLM idea. Its frozen numerical policy is price
 above a rising SMA200 plus Wilder RSI(2) below 10, ranked once per normal session.
 For each approved underlying, Python selects a 14–30 DTE call, rejects delta
-outside 0.55–0.85 or relative bid/ask above 6%, and sizes it from the active
+outside 0.55–0.85, relative bid/ask above 6% or a crossing cost above 10% of a
+one-ATR move, and sizes it from the active
 objective — a 0.5%-equity ATR risk budget by default, or the premium budget in
 tournament mode. One window may open several positions, and each gets its
 own news pull and its own AI event-risk review, so a portfolio of entries is a
@@ -289,6 +290,12 @@ Exit controls include:
   (`MONITOR_PROFIT_EXIT_ENABLED=false`): the entry gate prices the spread on
   its terminal payoff, and on a $2-wide spread the profit exits were closing
   winners early while losers ran to the breach (simulated −$520 vs +$587);
+- continuous re-approval (`hold_ev_negative`): the entry gate's own EV model
+  re-run on the held spread every five minutes with the executable closing
+  debit as the credit; two consecutive negative reviews close it with a limit,
+  always behind the defined-risk exits;
+- budget resize: a held spread is trimmed to the lane's current equity share
+  when that share is tightened after entry;
 - with profit exits on: executable 50% credit capture;
 - restart-safe executable-P&L high-water ratchet after 20% capture;
 - 20% normal giveback, tightened to 10% during high money volatility, where

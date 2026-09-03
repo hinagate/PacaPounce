@@ -102,7 +102,9 @@ can trade at all; without that reserve, full-buying-power sizing deployed
 everything and the second strategy was structurally unable to place an order.
 
 - Python selects a 14–30 DTE call from the live Alpaca chain, requires delta
-  0.55–0.85 and relative bid/ask at most 6%, and submits a `buy_to_open` limit
+  0.55–0.85, relative bid/ask at most 6% and a crossing cost at most 10% of a
+  one-ATR move (the unit the stop and the arm use, so the bid can follow the
+  stock), and submits a `buy_to_open` limit
   at the ask through Alpaca MCP. Among affordable contracts it takes the one
   with the cheapest carry, breaking ties toward 0.70 delta.
 - One window may open several positions. Each is resolved, gated, and
@@ -128,7 +130,13 @@ everything and the second strategy was structurally unable to place an order.
   the fresh bid, and after two unfilled limits the next attempt is a market
   order. Adopted positions that duplicate an issuer the lane already holds are
   closed after the opening rotation (`issuer_concentration`), keeping the
-  lane's own entry. The LLM never selects the contract, size, or exit.
+  lane's own entry. A held credit spread is re-priced by the entry gate's own
+  EV model every five minutes (`hold_ev_negative`): the debit to close is the
+  credit it still earns by holding, and two consecutive reviews in which the
+  model's expected terminal loss exceeds it close the position with a limit.
+  A held spread must also fit the lane's *current* equity share
+  (`budget_resize` trims the excess with an atomic limit). The LLM never
+  selects the contract, size, or exit.
 - **The ratchet exists for one failure mode.** Being wrong about direction is a
   probability outcome, and the 2×ATR stop already bounds it. Being *right* and
   ending flat is not a probability outcome — it is a missing control, and under
@@ -136,7 +144,12 @@ everything and the second strategy was structurally unable to place an order.
   waste a correct call. After a position captures 15% of the premium paid, its
   executable high-water mark is trailed by 40% of the gain, tightened to 25%
   when P&L volatility is elevated, and closed after two consecutive breaches so
-  one bad quote cannot exit. Because arming requires a positive capture and the
+  one bad quote cannot exit. Arming reads the stock as well as the bid: once
+  the underlying has been 0.35 ATR above the signal, the position arms as soon
+  as its executable high water covers half the P&L threshold, because an
+  illiquid contract's bid lags the stock (AMD 415C, 2026-09-02: three prints
+  all morning, +0.47 ATR in the stock, 83% of the threshold at the bid, no
+  trail, +$1,780 handed back). The floor is still set on the executable peak. Because arming requires a positive capture and the
   giveback is below 1, **an armed floor is always above breakeven**; the code
   clamps it at zero as well so no configuration can break that. The trail is
   measured at the live bid, not the midpoint, so the floor is a number the

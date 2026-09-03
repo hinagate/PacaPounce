@@ -554,6 +554,8 @@ EXIT_LABELS = {
     "max_hold_sessions": "Holding-session limit",
     "ema5_recovery": "EMA5 recovery",
     "issuer_concentration": "One position per issuer",
+    "hold_ev_negative": "Holding lost positive expectancy",
+    "budget_resize": "Trimmed to the lane's equity share",
 }
 
 
