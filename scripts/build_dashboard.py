@@ -328,6 +328,13 @@ def money(v, digits: int = 2) -> str:
     return f"{'-' if v < 0 else ''}${abs(v):,.{digits}f}"
 
 
+def signed(v, digits: int = 2) -> str:
+    """Money with an explicit operator, for sums a reader is meant to check."""
+    if v is None:
+        return "-"
+    return f"{'-' if v < 0 else '+'} ${abs(v):,.{digits}f}"
+
+
 def overview_time(value: object) -> str:
     """Compact Eastern timestamp for the judge-facing decision table."""
     try:
@@ -965,9 +972,6 @@ independently validated policy is allowed to touch the broker. Gate {summary.get
 <p>{presentation['approved_windows']} approved · {presentation['blocked_windows']} blocked</p></div>
 <div class="simple-table"><table><thead><tr><th>Time</th><th>Candidate</th><th>Decision</th>
 <th>Rationale</th><th>Gates</th></tr></thead><tbody>{decision_rows_html}</tbody></table></div>
-<div class="note"><b>Refresh semantics.</b> This static page reloads the newest snapshot;
-<code>run.py --loop</code> is the process that rebuilds it from Alpaca MCP. At market close,
-the final broker snapshot remains visible until the next session.</div>
 {second_strategy_block}
 </section>
 
@@ -1018,8 +1022,10 @@ audit live in the <b>Presentation &amp; Execution</b> table below and in
   <div class="tile"><div class="k">Account daily P&amp;L</div>
     <div class="v {pnl_cls}">{money(account_daily_pnl)}</div>
     <div class="f">equity minus last equity</div></div>
-  <div class="tile"><div class="k">Strategy P&amp;L</div><div class="v">{money(total_pnl)}</div>
-    <div class="f">fill-derived, {pl.get('fills', 0)} broker fills</div></div>
+  <div class="tile"><div class="k">Strategy P&amp;L (realized + open)</div>
+    <div class="v">{money(total_pnl)}</div>
+    <div class="f">{money(pl.get('realized_pnl'))} realized, {money(pl.get('unrealized_pnl'))} open;
+    fill-derived from {pl.get('fills', 0)} broker fills</div></div>
   <div class="tile"><div class="k">Open P&amp;L</div><div class="v">{money(pl.get('unrealized_pnl'))}</div>
     <div class="f">{pl.get('open_positions', 0)} positions</div></div>
   <div class="tile"><div class="k">Equity</div><div class="v">{money(pl.get('equity'), 0)}</div>
@@ -1028,8 +1034,15 @@ audit live in the <b>Presentation &amp; Execution</b> table below and in
     <div class="v">{money(pl.get('options_buying_power'), 0)}</div>
     <div class="f">binding full-capital budget; equity multiplier {pl.get('multiplier', '-')}x</div></div>
   <div class="tile"><div class="k">Orders sent</div><div class="v">{banner_orders}</div>
-    <div class="f">of {summary.get('approved', 0)} approved</div></div>
+    <div class="f">both lanes; {summary.get('approved', 0)} of them spread-lane gate approvals</div></div>
 </div>
+<div class="note"><b>Reconciling the two P&amp;L figures.</b> The tile above is
+realized plus open ({money(pl.get('realized_pnl'))} {signed(pl.get('unrealized_pnl'))} =
+{money(total_pnl)}). The chart below compares the gate's forecast against
+<em>realized</em> P&amp;L only, because an open position has not settled its
+forecast yet. Account daily P&amp;L is a third number and a wider one: it is
+equity minus the prior close, so it also moves with positions this agent opened
+on earlier sessions.</div>
 <h2 style="font-size:14px;margin:26px 0 4px">Did the gate's forecast hold up?</h2>
 <p class="sub" style="margin-bottom:2px">What the gate <em>predicted</em> across approved trades,
 next to what the account actually realized. A gate that forecasts well keeps these bars close.</p>
@@ -1123,24 +1136,6 @@ permission from Alpaca. No daily trade counter or pending-order lock lives only 
     option positions, checks the underlying 2×ATR14 stop, and sends a sell-to-close
     limit on stop, EMA5 recovery, or session three. The LLM never times exits.</p></div>
 </div>
-<div class="note"><b>Every Alpaca interaction goes through MCP.</b>
-<code>get_option_chain</code> and <code>get_option_snapshot</code> supply strikes, real bid/ask
-and Greeks; <code>place_option_order</code> submits atomic multi-leg orders with
-<code>order_class=mleg</code> and a negative limit price for credit. The LLM never names a
-strike - it emits intent, and deterministic code resolves it against the live chain.</div>
-<div class="note"><b>One-command paper session.</b> <code>run.py --loop</code> waits for the
-opening bell, starts and supervises both the auto-exit monitor and
-{config.DASHBOARD_REFRESH_INTERVAL_SEC}-second dashboard builder,
-hunts only while entry controls permit, and writes a final dashboard snapshot at close or on
-Ctrl+C. It then stops both helpers, sleeps toward MCP <code>next_open</code>, and restarts
-them automatically for the next trading day. If monitoring is unavailable,
-entries fail closed. In <code>{config.SIZING_MODE}</code> mode the annual target remains a
-visible benchmark; it does not stop a positive-EV entry or force an early target exit.</div>
-<div class="note"><b>Why Poe activity can appear in a burst.</b> One decision window may make
-up to {config.PROPOSAL_BUDGET} separate model calls when an intent is invalid, cannot be built,
-or is vetoed. The window then closes. <code>--loop</code> opens another window only after the next
-{config.SESSION_POLL_INTERVAL_SEC}-second MCP refresh says trading is still allowed. This is
-bounded proposal/revision activity, not an unrecorded continuous reasoning session.</div>
 </section>
 
 <section>

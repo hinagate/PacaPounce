@@ -172,8 +172,9 @@ def test_dashboard_contains_ai_intent_and_ordered_gate_catalog(tmp_path, monkeyp
     assert "Account identity" in html
     assert "Pending-order lock" in html
     assert "get_account_activities(FILL)" in html
-    assert "Why Poe activity can appear in a burst" in html
-    assert "One-command paper session" in html
+    # Those two explainer notes were cut for the submission; what they were
+    # evidence of - a bounded proposal budget and a supervised session - is
+    # still asserted through the gate catalog and the supervisor block above.
     assert "next_open" in html
     assert "nights, holidays, and weekends" in html
     assert "Profit high-water" in html
