@@ -744,6 +744,38 @@ def build(live: bool = True, output: Path | None = None,
             'Account is flat — no open positions reported by Alpaca MCP.</td></tr>'
         )
 
+    # Closed round trips, FIFO-matched from broker fills by veto.pnl. Legs of a
+    # credit spread appear separately because that is how the broker fills and
+    # reports them; the note under the table says so rather than netting them
+    # here, which would hide a leg.
+    closed_rows_html = ""
+    closed_total = 0.0
+    for trip in pl.get("closed_round_trips") or []:
+        realized = trip.get("realized") or 0.0
+        closed_total += realized
+        closed_rows_html += (
+            f"<tr><td><code>{html_lib.escape(str(trip.get('symbol') or '-'))}</code></td>"
+            f"<td>{html_lib.escape(str(trip.get('side') or '-'))}</td>"
+            f"<td>{float(trip.get('qty') or 0):g}</td>"
+            f"<td>{money(trip.get('avg_entry'))}</td>"
+            f"<td>{money(trip.get('avg_exit'))}</td>"
+            f"<td class={'pos' if realized >= 0 else 'neg'}>{money(realized)}</td>"
+            f"<td>{html_lib.escape(overview_time(trip.get('closed_ts')))}</td></tr>"
+        )
+    closed_note = ""
+    if closed_rows_html:
+        closed_note = (
+            '<div class="note">FIFO-matched from broker fills; the column sums to '
+            f'{money(round(closed_total, 2))}, the realized P&amp;L above. Each leg of a '
+            'credit spread is listed separately because the broker fills and reports '
+            'them that way, and netting them here would hide one.</div>'
+        )
+    else:
+        closed_rows_html = (
+            '<tr><td colspan="7" style="color:var(--muted);font-weight:400">'
+            'No completed round trips yet.</td></tr>'
+        )
+
     overview_entries = {number: row for number, row in selected_entries[:6]}
     submitted_entries = [
         (number, row) for number, row in selected_entries
@@ -966,6 +998,12 @@ independently validated policy is allowed to touch the broker. Gate {summary.get
 <div class="simple-table"><table><thead><tr><th>Asset</th><th>Qty</th>
 <th>Avg entry</th><th>Market value</th><th>Unrealized P&amp;L</th></tr></thead>
 <tbody>{position_rows_html}</tbody></table></div>
+
+<h3 style="font-size:14px;margin:24px 0 8px">Closed positions</h3>
+<div class="simple-table"><table><thead><tr><th>Asset</th><th>Side</th><th>Qty</th>
+<th>Avg entry</th><th>Avg exit</th><th>Realized P&amp;L</th><th>Closed (ET)</th></tr></thead>
+<tbody>{closed_rows_html}</tbody></table></div>
+{closed_note}
 
 <div class="overview-head"><div><h2>Decision log — what the agent did and why</h2>
 <p>Newest six bounded windows plus submitted decisions; retries are collapsed.</p></div>

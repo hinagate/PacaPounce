@@ -76,15 +76,19 @@ def closed_activity(days: int = 30) -> list[dict]:
     return out
 
 
-def realized_pnl_from_fills(activity: list[dict]) -> float:
-    """Match fills FIFO per OCC symbol and return P&L from closed quantity only.
+def _matched_fills(activity: list[dict]) -> list[dict]:
+    """FIFO-match opening and closing fills per OCC symbol.
 
     Summing fill cash is not realized P&L while an opening position remains: a
     short option's opening credit is paired with a liability.  Matching buys and
     sells removes that open inventory and keeps only completed round trips.
+
+    Returns one row per match so the realized total and the per-position table
+    are two views of the same arithmetic. Two implementations of this matching
+    would eventually disagree, and both numbers are shown to judges.
     """
-    inventory: dict[str, list[list[float]]] = {}
-    realized = 0.0
+    inventory: dict[str, list[list]] = {}
+    matches: list[dict] = []
     for fill in sorted(activity, key=lambda row: str(row.get("ts") or "")):
         side = str(fill.get("side") or "").lower()
         if not (side.startswith("buy") or side.startswith("sell")):
@@ -95,25 +99,79 @@ def realized_pnl_from_fills(activity: list[dict]) -> float:
         incoming_sign = 1.0 if side.startswith("buy") else -1.0
         price = float(fill.get("price") or 0.0)
         multiplier = float(fill.get("multiplier", 100) or 100)
-        lots = inventory.setdefault(str(fill.get("symbol") or ""), [])
+        symbol = str(fill.get("symbol") or "")
+        closed_ts = fill.get("ts")
+        lots = inventory.setdefault(symbol, [])
 
         while remaining > 1e-9 and lots and lots[0][0] * incoming_sign < 0:
-            held_qty, held_price = lots[0]
+            held_qty, held_price, held_ts = lots[0]
             matched = min(abs(held_qty), remaining)
-            if held_qty > 0:  # sell closes an existing long
-                realized += (price - held_price) * matched * multiplier
-            else:             # buy closes an existing short
-                realized += (held_price - price) * matched * multiplier
+            long_entry = held_qty > 0
+            pnl = ((price - held_price) if long_entry else (held_price - price))
+            matches.append({
+                "symbol": symbol,
+                "side": "long" if long_entry else "short",
+                "qty": matched,
+                "entry_price": held_price,
+                "exit_price": price,
+                "multiplier": multiplier,
+                "pnl": pnl * matched * multiplier,
+                "opened_ts": held_ts,
+                "closed_ts": closed_ts,
+            })
             updated = abs(held_qty) - matched
             remaining -= matched
             if updated <= 1e-9:
                 lots.pop(0)
             else:
-                lots[0][0] = (1.0 if held_qty > 0 else -1.0) * updated
+                lots[0][0] = (1.0 if long_entry else -1.0) * updated
 
         if remaining > 1e-9:
-            lots.append([incoming_sign * remaining, price])
-    return round(realized, 2)
+            lots.append([incoming_sign * remaining, price, closed_ts])
+    return matches
+
+
+def realized_pnl_from_fills(activity: list[dict]) -> float:
+    """P&L from closed quantity only. See _matched_fills."""
+    return round(sum(m["pnl"] for m in _matched_fills(activity)), 2)
+
+
+def closed_round_trips(activity: list[dict]) -> list[dict]:
+    """Completed round trips per symbol, newest close first.
+
+    Quantity-weighted entry and exit so the row reads as one position rather
+    than as the several fills it may have taken to open or close it. The sum of
+    ``realized`` across these rows is ``realized_pnl_from_fills`` exactly.
+    """
+    agg: dict[str, dict] = {}
+    for m in _matched_fills(activity):
+        row = agg.setdefault(m["symbol"], {
+            "symbol": m["symbol"], "side": m["side"], "qty": 0.0,
+            "entry_notional": 0.0, "exit_notional": 0.0, "realized": 0.0,
+            "opened_ts": m["opened_ts"], "closed_ts": m["closed_ts"],
+        })
+        row["qty"] += m["qty"]
+        row["entry_notional"] += m["entry_price"] * m["qty"]
+        row["exit_notional"] += m["exit_price"] * m["qty"]
+        row["realized"] += m["pnl"]
+        if str(m["opened_ts"] or "") < str(row["opened_ts"] or ""):
+            row["opened_ts"] = m["opened_ts"]
+        if str(m["closed_ts"] or "") > str(row["closed_ts"] or ""):
+            row["closed_ts"] = m["closed_ts"]
+    out = []
+    for row in agg.values():
+        qty = row["qty"] or 1.0
+        out.append({
+            "symbol": row["symbol"],
+            "side": row["side"],
+            "qty": round(row["qty"], 4),
+            "avg_entry": round(row["entry_notional"] / qty, 4),
+            "avg_exit": round(row["exit_notional"] / qty, 4),
+            "realized": round(row["realized"], 2),
+            "opened_ts": row["opened_ts"],
+            "closed_ts": row["closed_ts"],
+        })
+    return sorted(out, key=lambda r: str(r["closed_ts"] or ""), reverse=True)
 
 
 def account() -> dict:
@@ -197,6 +255,7 @@ def summary(days: int = 30) -> dict:
         "multiplier": acct.get("multiplier"),
         "options_approved_level": acct.get("options_approved_level"),
         "options_level": acct.get("options_level"),
+        "closed_round_trips": closed_round_trips(activity),
         "realized_pnl": realized,
         "unrealized_pnl": unrealized,
         "total_pnl": round(realized + unrealized, 2),
