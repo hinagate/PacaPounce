@@ -209,7 +209,7 @@ def test_contract_selection_requires_liquid_fresh_target_delta_call(monkeypatch)
     })
 
     contract, error = mr.select_long_call_contract(
-        {"symbol": "AAPL", "price": 313.89}, now
+        {"symbol": "AAPL", "price": 313.89, "atr14": 8.0}, now
     )
 
     assert error == ""
@@ -234,8 +234,10 @@ def test_contract_selection_prefers_the_widest_margin_over_the_measured_edge(mon
         },
     })
 
+    # A wide ATR so both contracts clear the crossing gate and the carry
+    # tiebreak is what this test isolates.
     contract, error = mr.select_long_call_contract(
-        {"symbol": "AMGN", "price": 431.46}, now
+        {"symbol": "AMGN", "price": 431.46, "atr14": 25.0}, now
     )
 
     assert error == ""
@@ -340,7 +342,8 @@ def test_approved_entry_is_single_leg_option_limit_and_broker_reconciled(
         "symbol": "AAPL260918C00095000", "underlying": "AAPL",
         "expiry": "2026-09-18", "strike": 95.0, "dte": 18,
         "bid": 10.0, "ask": 10.2, "mid": 10.1, "entry_limit": 10.2,
-        "delta": 0.69, "iv": 0.28, "rel_spread": 0.0198, "quote_age": 1.0,
+        "delta": 0.69, "iv": 0.28, "rel_spread": 0.0198, "crossing_atr_pct": 0.05,
+        "quote_age": 1.0,
         "carry": carry,
         "required_move_pct": round(carry["required_move_pct"], 6),
         "edge_margin_pct": round(
@@ -616,7 +619,8 @@ def _mr_contract(symbol, now):
         "symbol": f"{symbol}260918C00095000", "underlying": symbol,
         "expiry": "2026-09-18", "strike": 95.0, "dte": 18,
         "bid": 10.0, "ask": 10.2, "mid": 10.1, "entry_limit": 10.2,
-        "delta": 0.69, "iv": 0.28, "rel_spread": 0.0198, "quote_age": 1.0,
+        "delta": 0.69, "iv": 0.28, "rel_spread": 0.0198, "crossing_atr_pct": 0.05,
+        "quote_age": 1.0,
         "carry": carry,
         "required_move_pct": round(carry["required_move_pct"], 6),
         "edge_margin_pct": 0.001,
@@ -1572,3 +1576,123 @@ def test_issuer_duplicate_exit_never_pre_empts_the_stop(tmp_path, monkeypatch):
     state = mr.load_state()["positions"]
     assert state[adopted_a["contract_symbol"]]["exit_reason"] == "underlying_stop"
     assert state[own["contract_symbol"]]["exit_reason"] == "underlying_stop"
+
+
+def test_an_illiquid_bid_no_longer_hides_a_position_that_has_been_right(monkeypatch):
+    """AMD260925C00415000, 2026-09-02: the stock moved +0.47 ATR from the
+    signal, but the option traded three times all morning and its bid-based
+    high water reached only $1,780 against a $2,133 threshold. The trail never
+    existed and +$1,780 became +$20. Arming now also reads the stock."""
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_ENABLED", True)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_ARM_ATR", 0.35)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_ARM_QUOTE_ALLOWANCE", 0.5)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_GIVEBACK_PCT", 0.40)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_CONFIRMATIONS", 2)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_HIGH_VOL_ATR", 9.9)  # isolate from the tightening
+    atr, delta, qty, signal = 19.1709, 0.7946, 4, 453.18
+    threshold = mr.ratchet_arm_threshold(atr, delta, qty)
+    assert round(threshold, 2) == 2132.65
+    premium = 46.85 * qty * 100
+
+    def step(state, pnl, spot):
+        return mr.ratchet_update(
+            state, pnl, premium, arm_threshold=threshold,
+            volatility_scale=mr.ratchet_vol_scale(atr, delta, qty),
+            underlying_move=mr.underlying_move_atr(spot, signal, atr),
+        )
+
+    # 10:15 ET: stock +0.33 ATR, bid says +$1,200 - not yet right, not armed.
+    state = step(None, 1200.0, 459.5)
+    assert state["armed"] is False and state["armed_by"] is None
+    assert state["underlying_high_atr"] == round((459.5 - signal) / atr, 4)
+    # 10:30 ET: stock 462.16 = +0.47 ATR. The bid reads $1,780 - 83% of the
+    # threshold, above the 50% allowance - so the position is armed by the
+    # stock, and the floor sits on the executable peak.
+    state = step(state, 1780.0, 462.16)
+    assert state["armed"] is True and state["armed_by"] == "underlying"
+    assert state["floor_pnl"] == round(1780.0 * 0.60, 2)
+    # The stock pulls back but "has been right" is sticky: still armed.
+    state = step(state, 1500.0, 459.0)
+    assert state["armed"] is True and state["underlying_high_atr"] == round((462.16 - signal) / atr, 4)
+    # Two confirmed marks at or below the floor close it near +$1,000, not +$20.
+    state = step(state, 1050.0, 457.5)
+    state = step(state, 1000.0, 456.5)
+    assert state["close"] is True and state["reason"] == "profit_ratchet"
+    assert mr.ratchet_evidence(state)["ratchet_armed_by"] == "underlying"
+
+
+def test_the_stock_alone_cannot_arm_a_bid_that_never_moved(monkeypatch):
+    """The allowance is a bound on what a wide quote may hide, not a bypass:
+    a stock that made the move while the bid shows less than half the
+    threshold has a claim the position cannot sell, and a trail on that would
+    close a live thesis for nothing."""
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_ENABLED", True)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_ARM_ATR", 0.35)
+    monkeypatch.setattr(mr.config, "OPTION_MR_RATCHET_ARM_QUOTE_ALLOWANCE", 0.5)
+    atr, delta, qty, signal = 19.1709, 0.7946, 4, 453.18
+    threshold = mr.ratchet_arm_threshold(atr, delta, qty)
+    state = mr.ratchet_update(
+        None, 900.0, 46.85 * qty * 100, arm_threshold=threshold,
+        volatility_scale=mr.ratchet_vol_scale(atr, delta, qty),
+        underlying_move=mr.underlying_move_atr(462.16, signal, atr),
+    )
+    assert state["underlying_high_atr"] >= 0.35
+    assert state["armed"] is False and state["armed_by"] is None
+    # And a bid that has never been positive arms on nothing, whatever the stock did.
+    state = mr.ratchet_update(
+        None, -50.0, 46.85 * qty * 100, arm_threshold=threshold,
+        underlying_move=mr.underlying_move_atr(470.0, signal, atr),
+    )
+    assert state["armed"] is False
+    # Without a usable signal price or ATR the stock path is simply absent.
+    assert mr.underlying_move_atr(462.16, 0.0, atr) is None
+    assert mr.underlying_move_atr(462.16, signal, 0.0) is None
+    state = mr.ratchet_update(None, 2200.0, 46.85 * qty * 100, arm_threshold=threshold,
+                              underlying_move=None)
+    assert state["armed"] is True and state["armed_by"] == "executable"
+    assert state["underlying_high_atr"] is None
+
+
+def test_crossing_cost_is_measured_against_an_atr_move_not_the_premium(monkeypatch):
+    """2026-09-02, 10:00 ET. AMD260925C00415000 at 44.50/46.85 passed the 6%
+    relative gate at 5.1% - and cost $235 to cross, 15% of the $1,523 a
+    one-ATR move produces at 0.79 delta, so its bid could not follow the
+    stock and the trail never armed. INTC260925C00077000 at 12.35/12.55
+    cost $20, 5% of $388, and trailed cleanly."""
+    monkeypatch.setattr(mr.config, "OPTION_MR_MAX_SPREAD_PCT", 0.06)
+    monkeypatch.setattr(mr.config, "OPTION_MR_MAX_CROSSING_ATR_PCT", 0.10)
+    assert round(mr.crossing_atr_share(44.50, 46.85, 0.7946, 19.1709), 3) == 0.154
+    assert round(mr.crossing_atr_share(12.35, 12.55, 0.8484, 4.5634), 3) == 0.052
+    assert mr.crossing_atr_share(44.50, 46.85, 0.7946, 0.0) is None
+
+    now = datetime(2026, 9, 2, 10, 0, tzinfo=ET)
+    _chain(monkeypatch, {
+        "AMD260925C00415000": {
+            "latestQuote": {"bp": 44.50, "ap": 46.85, "t": now.isoformat()},
+            "greeks": {"delta": 0.7946}, "impliedVolatility": 0.45,
+        },
+    })
+    contract, error = mr.select_long_call_contract(
+        {"symbol": "AMD", "price": 453.18, "atr14": 19.1709}, now
+    )
+    assert contract is None
+    assert "crossing <= 10% of a one-ATR move" in error
+
+    _chain(monkeypatch, {
+        "INTC260925C00077000": {
+            "latestQuote": {"bp": 12.35, "ap": 12.55, "t": now.isoformat()},
+            "greeks": {"delta": 0.8484}, "impliedVolatility": 0.40,
+        },
+    })
+    contract, error = mr.select_long_call_contract(
+        {"symbol": "INTC", "price": 88.16, "atr14": 4.5634}, now
+    )
+    assert error == "" and contract["symbol"] == "INTC260925C00077000"
+    assert contract["crossing_atr_pct"] == round(20 / (4.5634 * 0.8484 * 100), 6)
+
+    # A candidate whose ATR is unusable cannot be measured in these units, and
+    # a contract that cannot be measured is not bought.
+    contract, error = mr.select_long_call_contract(
+        {"symbol": "INTC", "price": 88.16}, now
+    )
+    assert contract is None

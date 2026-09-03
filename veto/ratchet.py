@@ -83,7 +83,9 @@ def _dispersion(history: list[float], mode: str) -> float:
 def update(*, pnl: float | None, denominator: float, history: list[float],
            breach_count: int, policy: Policy, quote_ready: bool = True,
            high_water: float = 0.0, arm_threshold: float | None = None,
-           volatility_scale: float | None = None, noise_pnl: float = 0.0) -> dict:
+           volatility_scale: float | None = None, noise_pnl: float = 0.0,
+           arm_confirmed: bool = False,
+           confirmed_arm_threshold: float | None = None) -> dict:
     """Advance one position's ratchet by a single executable mark.
 
     ``pnl`` is measured at the price the position could actually be closed at -
@@ -109,6 +111,16 @@ def update(*, pnl: float | None, denominator: float, history: list[float],
     alone; at or below it the tape is not volatile, it is merely quoted in
     ticks. A $0.30 credit spread quoted in cents cannot move by less than 3% of
     its maximum profit, so without this floor every tick read as disorder.
+
+    ``arm_confirmed`` is the caller's independent evidence that the position
+    has been right - for a long option, that the underlying itself has made
+    the arming move. The executable peak is read from the bid, and on an
+    illiquid contract the bid lags the stock, so a position can be right
+    without its bid saying so yet. When confirmed, the position arms once the
+    peak reaches ``confirmed_arm_threshold`` (the caller's allowance for what
+    a wide quote may hide) instead of the full ``arm_threshold``. The floor is
+    still set on the executable peak: what is protected is always a number the
+    position can be sold at.
     """
     series = [float(value) for value in history]
     if pnl is not None:
@@ -142,7 +154,17 @@ def update(*, pnl: float | None, denominator: float, history: list[float],
     threshold = (
         policy.arm_pct * scale if arm_threshold is None else max(arm_threshold, 0.0)
     )
-    armed = peak >= threshold
+    armed_by = None
+    if peak >= threshold:
+        armed_by = "executable"
+    elif (
+        arm_confirmed
+        and confirmed_arm_threshold is not None
+        and peak >= max(confirmed_arm_threshold, 0.0)
+        and peak > 0
+    ):
+        armed_by = "underlying"
+    armed = armed_by is not None
 
     dispersion = _dispersion(series, policy.volatility_mode)
     vol_scale = max(volatility_scale, 0.01) if volatility_scale else scale
@@ -172,6 +194,7 @@ def update(*, pnl: float | None, denominator: float, history: list[float],
 
     base.update({
         "armed": armed,
+        "armed_by": armed_by,
         "high_water_pnl": round(peak, 2),
         "arm_threshold_pnl": round(threshold, 2),
         "trailing_floor_pnl": round(trailing_floor, 2),

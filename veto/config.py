@@ -294,6 +294,22 @@ OPTION_MR_RATCHET_ENABLED = os.getenv(
 OPTION_MR_RATCHET_ARM_ATR = float(
     os.getenv("PACAPOUNCE_OPTION_MR_RATCHET_ARM_ATR", "0.35")
 )
+# Arming is a statement about the stock, but the executable P&L it was read
+# from is a statement about the option's bid. On an illiquid contract the bid
+# lags the stock: AMD 415C on 2026-09-02 traded three times all morning, the
+# stock moved +0.47 ATR, and the bid-based high water reached 83% of the arm
+# threshold - so the trail never existed and +$1,780 went back to +$20. The
+# arm test therefore also reads the underlying directly: once the stock has
+# been ARM_ATR above the signal price, the position has been right, and it
+# arms provided the executable high water is at least this share of the
+# P&L threshold. A wide quote may hide up to half the move, not all of it -
+# below that, the contract cannot realise its gains and a trail on them would
+# be a trail on nothing.
+OPTION_MR_RATCHET_ARM_QUOTE_ALLOWANCE = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_RATCHET_ARM_QUOTE_ALLOWANCE", "0.5")
+)
+if not 0 < OPTION_MR_RATCHET_ARM_QUOTE_ALLOWANCE <= 1:
+    raise ValueError("PACAPOUNCE_OPTION_MR_RATCHET_ARM_QUOTE_ALLOWANCE must be in (0, 1]")
 if OPTION_MR_RATCHET_ARM_ATR <= 0:
     raise ValueError("PACAPOUNCE_OPTION_MR_RATCHET_ARM_ATR must be positive")
 # Fallback when a position has no usable ATR or delta - an adopted position, or
@@ -464,6 +480,18 @@ if not 0 < OPTION_MR_DELTA_MIN <= OPTION_MR_DELTA_TARGET <= OPTION_MR_DELTA_MAX 
     raise ValueError("option MR delta range/target is invalid")
 if not 0 < OPTION_MR_MAX_SPREAD_PCT <= 1:
     raise ValueError("PACAPOUNCE_OPTION_MR_MAX_SPREAD_PCT must be in (0, 1]")
+# The relative spread above is a share of the option's price; what the exit
+# side needs is a bid that keeps up with the stock, and that is a share of an
+# ATR move. AMD260925C00415000 passed the 6% test at 5.1% on 2026-09-02 and
+# cost $235/contract to cross - 15% of the P&L a one-ATR move produces
+# (19.17 x 0.79 x 100 = $1,523) - so the bid lagged the stock and the trail
+# never armed. INTC's $20 was 5% of its $388. Crossing cost may take at most
+# this share of a one-ATR move, in the same units as the arm and the stop.
+OPTION_MR_MAX_CROSSING_ATR_PCT = float(
+    os.getenv("PACAPOUNCE_OPTION_MR_MAX_CROSSING_ATR_PCT", "0.10")
+)
+if not 0 < OPTION_MR_MAX_CROSSING_ATR_PCT <= 1:
+    raise ValueError("PACAPOUNCE_OPTION_MR_MAX_CROSSING_ATR_PCT must be in (0, 1]")
 if OPTION_MR_MAX_POSITIONS < 1 or OPTION_MR_MAX_ENTRIES_PER_DAY < 1:
     raise ValueError("option MR requires at least one position and one entry per day")
 if OPTION_MR_MAX_ENTRIES_PER_DAY > OPTION_MR_MAX_POSITIONS:

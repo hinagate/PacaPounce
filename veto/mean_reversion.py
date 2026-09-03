@@ -283,6 +283,8 @@ def ratchet_evidence(state: dict | None) -> dict:
     ratchet = state or {}
     return {
         "ratchet_armed": ratchet.get("armed"),
+        "ratchet_armed_by": ratchet.get("armed_by"),
+        "ratchet_underlying_high_atr": ratchet.get("underlying_high_atr"),
         "ratchet_high_water_pnl": ratchet.get("high_water_pnl"),
         "ratchet_arm_threshold_pnl": ratchet.get("arm_threshold_pnl"),
         "ratchet_floor_pnl": ratchet.get("floor_pnl"),
@@ -320,16 +322,43 @@ def ratchet_vol_scale(atr: float, delta: float, qty: float) -> float | None:
     return atr * abs(delta) * qty * 100
 
 
+def underlying_move_atr(spot: float, signal_price: float, atr: float) -> float | None:
+    """How far the stock has moved from the signal, in ATRs. None if unusable."""
+    if spot <= 0 or signal_price <= 0 or atr <= 0:
+        return None
+    return (spot - signal_price) / atr
+
+
 def ratchet_update(state: dict | None, executable_pnl: float | None,
                    premium_paid: float, quote_ready: bool = True,
                    arm_threshold: float | None = None,
-                   volatility_scale: float | None = None) -> dict:
-    """Advance the long call's profit ratchet by one executable mark."""
+                   volatility_scale: float | None = None,
+                   underlying_move: float | None = None) -> dict:
+    """Advance the long call's profit ratchet by one executable mark.
+
+    ``underlying_move`` is the stock's move from the signal price in ATRs. Its
+    high water is carried in the state, because "has been right" is sticky:
+    a stock that reached the arming move and pulled back has still been there.
+    Once that high water reaches OPTION_MR_RATCHET_ARM_ATR the position arms
+    as soon as its executable peak covers ARM_QUOTE_ALLOWANCE of the P&L
+    threshold - the bid of an illiquid contract is allowed to lag the stock by
+    that much, no more.
+    """
     previous = dict(state or {})
     if not config.OPTION_MR_RATCHET_ENABLED:
         return {**previous, "close": False, "reason": None,
                 "armed": bool(previous.get("armed")),
                 "samples": list(previous.get("samples") or [])}
+    underlying_high = previous.get("underlying_high_atr")
+    if underlying_move is not None:
+        underlying_high = (
+            underlying_move if underlying_high is None
+            else max(_f(underlying_high), underlying_move)
+        )
+    arm_confirmed = (
+        underlying_high is not None
+        and _f(underlying_high) >= config.OPTION_MR_RATCHET_ARM_ATR
+    )
     result = ratchet.update(
         pnl=executable_pnl,
         denominator=premium_paid,
@@ -340,9 +369,18 @@ def ratchet_update(state: dict | None, executable_pnl: float | None,
         quote_ready=quote_ready,
         arm_threshold=arm_threshold,
         volatility_scale=volatility_scale,
+        arm_confirmed=arm_confirmed,
+        confirmed_arm_threshold=(
+            arm_threshold * config.OPTION_MR_RATCHET_ARM_QUOTE_ALLOWANCE
+            if arm_threshold is not None else None
+        ),
     )
     return {
         "armed": result["armed"],
+        "armed_by": result.get("armed_by"),
+        "underlying_high_atr": (
+            round(_f(underlying_high), 4) if underlying_high is not None else None
+        ),
         "samples": result["history"],
         "high_water_pnl": result["high_water_pnl"],
         "arm_threshold_pnl": result["arm_threshold_pnl"],
@@ -414,10 +452,26 @@ def _quote_age(value, now_et: datetime) -> float:
     return max(0.0, (now_et - observed).total_seconds())
 
 
+def crossing_atr_share(bid: float, ask: float, delta: float, atr: float) -> float | None:
+    """Cost of crossing the quote as a share of the P&L of a one-ATR move.
+
+    The number the exit side lives on: a trail can only follow a bid that
+    moves with the stock, and a quote that eats a large share of an ATR move
+    hides the move from the bid. None when ATR or delta is unusable, which
+    the caller treats as failing - a contract whose liquidity cannot be
+    measured in these units cannot be stopped or armed in them either.
+    """
+    if atr <= 0 or delta <= 0:
+        return None
+    one_atr_pnl = atr * abs(delta) * 100
+    return max(ask - bid, 0.0) * 100 / one_atr_pnl
+
+
 def select_long_call_contract(candidate: dict, now_et: datetime) -> tuple[dict | None, str]:
     """Resolve one liquid long call from the live Alpaca option chain."""
     symbol = candidate["symbol"]
     spot = float(candidate["price"])
+    atr = float(candidate.get("atr14") or 0.0)
     start = (now_et.date() + timedelta(days=config.OPTION_MR_DTE_MIN)).isoformat()
     end = (now_et.date() + timedelta(days=config.OPTION_MR_DTE_MAX)).isoformat()
     payload = mcp_client.run(mcp_client.call_all_pages(
@@ -452,10 +506,13 @@ def select_long_call_contract(candidate: dict, now_et: datetime) -> tuple[dict |
         mid = (bid + ask) / 2
         rel_spread = (ask - bid) / mid if mid > 0 else 1.0
         quote_age = _quote_age(quote.get("t"), now_et)
+        crossing_share = crossing_atr_share(bid, ask, delta, atr)
         if not (
             config.OPTION_MR_DTE_MIN <= dte <= config.OPTION_MR_DTE_MAX
             and config.OPTION_MR_DELTA_MIN <= delta <= config.OPTION_MR_DELTA_MAX
             and rel_spread <= config.OPTION_MR_MAX_SPREAD_PCT
+            and crossing_share is not None
+            and crossing_share <= config.OPTION_MR_MAX_CROSSING_ATR_PCT
             and quote_age <= config.QUOTE_MAX_AGE_SEC
         ):
             continue
@@ -484,13 +541,15 @@ def select_long_call_contract(candidate: dict, now_et: datetime) -> tuple[dict |
             "iv": round(_f((snapshot or {}).get("impliedVolatility") or
                            (snapshot or {}).get("implied_volatility")), 4),
             "rel_spread": round(rel_spread, 6),
+            "crossing_atr_pct": round(crossing_share, 6),
             "quote_age": round(quote_age, 3),
         })
     if not eligible:
         return None, (
             f"no {config.OPTION_MR_DTE_MIN}-{config.OPTION_MR_DTE_MAX} DTE call with "
             f"delta {config.OPTION_MR_DELTA_MIN:.2f}-{config.OPTION_MR_DELTA_MAX:.2f}, "
-            f"spread <= {config.OPTION_MR_MAX_SPREAD_PCT:.0%}, and carry inside the "
+            f"spread <= {config.OPTION_MR_MAX_SPREAD_PCT:.0%}, crossing <= "
+            f"{config.OPTION_MR_MAX_CROSSING_ATR_PCT:.0%} of a one-ATR move, and carry inside the "
             f"{config.OPTION_MR_CARRY_CEILING_PCT:.3%} ceiling "
             f"({config.OPTION_MR_CARRY_EDGE_MULTIPLE:g}x the measured signal edge)"
         )
@@ -1094,6 +1153,12 @@ def _open_one_call(state: dict, snapshot, candidate: dict, contract: dict,
                f"quote age {contract['quote_age']:.1f}s <= {config.QUOTE_MAX_AGE_SEC}s"),
         _check("option_liquidity", contract["rel_spread"] <= config.OPTION_MR_MAX_SPREAD_PCT,
                f"bid/ask {contract['rel_spread']:.1%} <= {config.OPTION_MR_MAX_SPREAD_PCT:.1%}"),
+        _check("option_liquidity_atr",
+               contract.get("crossing_atr_pct") is not None
+               and contract["crossing_atr_pct"] <= config.OPTION_MR_MAX_CROSSING_ATR_PCT,
+               f"crossing ${contract['carry']['crossing_usd']:,.2f}/contract = "
+               f"{contract.get('crossing_atr_pct') or 0:.1%} of a one-ATR move "
+               f"<= {config.OPTION_MR_MAX_CROSSING_ATR_PCT:.0%}"),
         _check("carry_within_signal_edge",
                contract["required_move_pct"] <= config.OPTION_MR_CARRY_CEILING_PCT,
                f"needs {contract['required_move_pct']:.3%} underlying move over "
@@ -1531,6 +1596,9 @@ def monitor_cycle(clock: dict, open_orders_payload, all_positions_payload,
             ),
             volatility_scale=ratchet_vol_scale(
                 _f(record.get("atr14")), _f(record.get("delta")), qty,
+            ),
+            underlying_move=underlying_move_atr(
+                spot, _f(record.get("signal_price")), _f(record.get("atr14")),
             ),
         )
         record["ratchet"] = ratchet_state
