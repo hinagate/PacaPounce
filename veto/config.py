@@ -132,6 +132,41 @@ MONITOR_HIGH_VOL_PCT_MAX_PROFIT = float(
 MONITOR_PROFIT_EXIT_ENABLED = os.getenv(
     "PACAPOUNCE_MONITOR_PROFIT_EXIT_ENABLED", "true"
 ).lower() in {"1", "true", "yes", "on"}
+# Hold-expectancy review. Hold-to-expiry delivers the payoff the entry gate
+# priced, but the gate's approval was a statement about the numbers at entry.
+# The same model - EWMA realised vol for the level, the live chain's skew for
+# the tail shape, the equity risk premium as drift - is re-run on the held
+# position every few minutes. The debit to close now is the credit the
+# position still earns by holding; when the model's expected terminal loss
+# exceeds it, holding has negative expectancy against closing, and after the
+# configured consecutive reviews agree the position is closed with a limit.
+# This is the gate's own arithmetic applied continuously, not a new opinion,
+# and it never pre-empts the defined-risk exits. Off by default; the
+# competition runs it on.
+MONITOR_HOLD_EV_EXIT_ENABLED = os.getenv(
+    "PACAPOUNCE_MONITOR_HOLD_EV_EXIT_ENABLED", "false"
+).lower() in {"1", "true", "yes", "on"}
+MONITOR_HOLD_EV_AFTER_ET = os.getenv("PACAPOUNCE_MONITOR_HOLD_EV_AFTER_ET", "09:45").strip()
+MONITOR_HOLD_EV_INTERVAL_MIN = int(
+    os.getenv("PACAPOUNCE_MONITOR_HOLD_EV_INTERVAL_MIN", "5")
+)
+MONITOR_HOLD_EV_CONFIRMATIONS = int(
+    os.getenv("PACAPOUNCE_MONITOR_HOLD_EV_CONFIRMATIONS", "2")
+)
+if MONITOR_HOLD_EV_INTERVAL_MIN < 1 or MONITOR_HOLD_EV_CONFIRMATIONS < 1:
+    raise ValueError(
+        "PACAPOUNCE_MONITOR_HOLD_EV_INTERVAL_MIN and "
+        "PACAPOUNCE_MONITOR_HOLD_EV_CONFIRMATIONS must be at least one"
+    )
+# Budget resize. A held spread must fit the lane's current equity share, not
+# only the share that applied when it was opened: when SPREAD_EQUITY_PCT is
+# tightened, the excess contracts are closed with an atomic limit and the rest
+# keep the thesis at the size the policy now allows. The ceiling is equity x
+# share, deliberately not live options buying power - a held position's
+# collateral is already posted, so remaining BP says nothing about it.
+MONITOR_BUDGET_RESIZE_ENABLED = os.getenv(
+    "PACAPOUNCE_MONITOR_BUDGET_RESIZE_ENABLED", "false"
+).lower() in {"1", "true", "yes", "on"}
 
 # A profitable exit may earn one new attempt, but only after the market has had
 # time to reset and only if the new post-cost EV per defined-risk dollar is

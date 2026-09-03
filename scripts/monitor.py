@@ -43,13 +43,17 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from veto import config, mcp_client, mean_reversion, risk_state, session, skew  # noqa: E402
-from veto.gates import friction_usd  # noqa: E402
+from veto.builder import refresh_realized_vol  # noqa: E402
+from veto.gates import expected_value, friction_usd  # noqa: E402
 from veto.sizing import buying_power_contracts  # noqa: E402
 
 LOG = config.SESSION_LOG
 ET = ZoneInfo("America/New_York")
 OCC_RE = re.compile(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$")
 CHASE_STEP = float(__import__("os").environ.get("PACAPOUNCE_CHASE_STEP", "0.01"))
+# Exits that close at market because waiting is the risk. Everything else
+# closes with a limit, and a resize never pre-empts one of these.
+EMERGENCY_ACTIONS = {"stop_loss", "long_strike_breach", "pin_risk"}
 CHASE_BP_REFRESH_ATTEMPTS = 3
 CHASE_BP_REFRESH_INTERVAL_SEC = 0.5
 CHASE_VERIFY_ATTEMPTS = 10
@@ -375,6 +379,16 @@ def decide_exit(
         return "long_strike_breach", "underlying moved beyond protective long strike"
     if metrics["loss_used"] >= stop_max_loss:
         return "stop_loss", f"used {metrics['loss_used']:.1%} of defined max loss"
+
+    # The entry gate's own model, re-run on the held position (hold_ev_review).
+    # Ordered after the defined-risk exits: those are market orders because
+    # waiting is the risk; this is a limit because the risk is expectancy.
+    hold_ev = metrics.get("hold_ev") or {}
+    if hold_ev.get("close"):
+        return "hold_ev_negative", (
+            f"holding has negative expectancy: {hold_ev.get('detail', '')} "
+            f"({hold_ev.get('negatives')} consecutive reviews)"
+        )
     return None, "hold" if profit_exits else "hold_to_expiry"
 
 
@@ -435,6 +449,190 @@ def spread_metrics(
     return {**metrics, "action": action, "decision": decision}
 
 
+def hold_expectancy(
+    spread: dict,
+    quotes: dict[str, dict],
+    spot: float,
+    now_et: datetime,
+) -> dict:
+    """Re-run the entry gate's EV model on a held spread.
+
+    The gate approved the spread because, at the entry credit, realised vol
+    (EWMA) with the chain's skew and the equity risk premium as drift said the
+    expected terminal loss was below what the position was paid. The same
+    question is asked of the live position with one substitution: the credit
+    is the executable debit to close now, because that is what the position
+    still earns by holding rather than closing. Friction is not subtracted -
+    closing pays it, holding does not, and the executable debit already
+    contains it. A position that fails this test has negative expectancy
+    against closing under the model that opened it.
+    """
+    short_q = quotes.get(spread["short_symbol"])
+    long_q = quotes.get(spread["long_symbol"])
+    dte = (date.fromisoformat(spread["expiry"]) - now_et.date()).days
+    if not short_q or not long_q:
+        return {"evaluated": False, "reason": "quotes_unavailable"}
+    if dte < 1:
+        # Expiry day delivers the payoff; the pin-risk rule owns it.
+        return {"evaluated": False, "reason": "expiry_day"}
+    if spot <= 0:
+        return {"evaluated": False, "reason": "spot_unavailable"}
+    is_put = spread["right"] == "P"
+    underlying = spread["underlying"]
+    lo, hi = min(spread["short_strike"], spread["long_strike"]), max(
+        spread["short_strike"], spread["long_strike"]
+    )
+    (chain_payload,) = mcp_client.run(mcp_client.call_many_all_pages([
+        ("get_option_chain", {
+            "underlying_symbol": underlying,
+            "expiration_date": spread["expiry"],
+            "type": "put" if is_put else "call",
+            "strike_price_gte": lo - 5,
+            "strike_price_lte": hi + 5,
+            "limit": 400,
+        }),
+    ]))
+    snapshots = (chain_payload or {}).get("snapshots") or {}
+    legs, deltas = [], {}
+    for symbol, snapshot in snapshots.items():
+        occ = parse_occ(symbol)
+        quote = (snapshot or {}).get("latestQuote") or {}
+        bid, ask = _f(quote.get("bp")), _f(quote.get("ap"))
+        if occ and bid > 0 and ask > 0:
+            legs.append({
+                "strike": occ["strike"],
+                "mid": (ask + bid) / 2,
+                "bid": bid,
+                "ask": ask,
+                "iv": _f((snapshot or {}).get("impliedVolatility")),
+            })
+            deltas[symbol] = abs(_f(((snapshot or {}).get("greeks") or {}).get("delta")))
+    smile = skew.build_smile(spot, dte / 252, legs, is_put=is_put)
+    atm = _f(skew.atm_vol(smile, spot)) if smile else 0.0
+    rvol = _f(refresh_realized_vol(underlying))
+    if rvol <= 0:
+        # Without a realised-vol level the model degrades to the chain's own
+        # probabilities, which price every spread at ~zero. Fail safe: hold.
+        return {"evaluated": False, "reason": "realized_vol_unavailable"}
+    executable_debit = max(short_q["ask"] - long_q["bid"], 0.01)
+    mid_debit = max(short_q["mid"] - long_q["mid"], 0.0)
+    econ = expected_value(
+        executable_debit, spread["width"],
+        deltas.get(spread["short_symbol"], 0.0), deltas.get(spread["long_symbol"], 0.0),
+        spot=spot, short_strike=spread["short_strike"], long_strike=spread["long_strike"],
+        dte=dte, realized_vol=rvol, smile=smile, is_put=is_put,
+    )
+    hold_ev = _f(econ.get("ev_gross_usd"))
+    expected_loss = _f(econ.get("expected_loss_real_usd"))
+    hold_ok = hold_ev > config.MIN_EV_USD
+    return {
+        "evaluated": True,
+        "hold_ok": hold_ok,
+        "checked_at": now_et.isoformat(),
+        "dte": dte,
+        "spot": round(spot, 4),
+        "executable_debit": round(executable_debit, 4),
+        "mid_debit": round(mid_debit, 4),
+        "realized_vol": round(rvol, 4),
+        "atm_iv": round(atm, 4),
+        "vrp_ratio": econ.get("vrp_ratio"),
+        "ev_basis": econ.get("ev_basis"),
+        "expected_loss_usd": round(expected_loss, 2),
+        "hold_ev_usd": round(hold_ev, 2),
+        "hold_ev_zero_drift_usd": econ.get("ev_at_zero_drift_usd"),
+        "hold_ev_total_usd": round(hold_ev * float(spread.get("qty") or 0), 2),
+        "min_ev_usd": config.MIN_EV_USD,
+        "detail": (
+            f"hold EV ${hold_ev:+.2f}/contract: expected terminal loss "
+            f"${expected_loss:.2f} vs ${executable_debit * 100:.2f} retained by "
+            f"holding at {executable_debit:.2f} debit; realised {rvol:.1%} vs "
+            f"ATM implied {atm:.1%} ({econ.get('ev_basis')}), {dte}d to expiry"
+        ),
+    }
+
+
+# Per-pair review state. Lives in the process: a restart costs one fresh
+# evaluation, never a stale decision.
+_HOLD_EV: dict[str, dict] = {}
+
+
+def hold_ev_review(
+    spread: dict,
+    quotes: dict[str, dict],
+    spot: float,
+    now_et: datetime,
+    market_open: bool,
+    evaluate=None,
+) -> dict | None:
+    """Schedule hold_expectancy and confirm its verdict across reviews.
+
+    Evaluated at most every MONITOR_HOLD_EV_INTERVAL_MIN minutes from
+    MONITOR_HOLD_EV_AFTER_ET, so the opening rotation's quotes never decide
+    anything. ``close`` needs MONITOR_HOLD_EV_CONFIRMATIONS consecutive
+    negative evaluations; one positive resets the count; an evaluation that
+    could not run (expiry day, missing data, an error) leaves it unchanged.
+    """
+    if not config.MONITOR_HOLD_EV_EXIT_ENABLED:
+        return None
+    evaluate = evaluate or hold_expectancy
+    key = f"{spread['short_symbol']}|{spread['long_symbol']}"
+    session = now_et.date().isoformat()
+    record = _HOLD_EV.get(key)
+    if record is None or record["session"] != session:
+        record = {"session": session, "negatives": 0, "last": None, "checked_at": None}
+        _HOLD_EV[key] = record
+    hours, minutes = (int(part) for part in config.MONITOR_HOLD_EV_AFTER_ET.split(":"))
+    due = (
+        market_open
+        and now_et.time() >= wall_time(hours, minutes)
+        and (
+            record["checked_at"] is None
+            or (now_et - record["checked_at"]).total_seconds()
+            >= config.MONITOR_HOLD_EV_INTERVAL_MIN * 60
+        )
+    )
+    if due:
+        try:
+            result = evaluate(spread, quotes, spot, now_et)
+        except Exception as exc:  # noqa: BLE001 - a failed review must not stop the monitor
+            result = {"evaluated": False, "reason": f"{type(exc).__name__}: {exc}"}
+            log("hold_ev_error", short_symbol=spread["short_symbol"],
+                long_symbol=spread["long_symbol"], error=result["reason"])
+        record["checked_at"] = now_et
+        record["last"] = result
+        if result.get("evaluated"):
+            record["negatives"] = 0 if result["hold_ok"] else record["negatives"] + 1
+    last = record["last"] or {"evaluated": False, "reason": "not_yet_reviewed"}
+    return {
+        **last,
+        "negatives": record["negatives"],
+        "confirmations": config.MONITOR_HOLD_EV_CONFIRMATIONS,
+        "close": record["negatives"] >= config.MONITOR_HOLD_EV_CONFIRMATIONS,
+        "last_review_at": record["checked_at"].isoformat() if record["checked_at"] else None,
+    }
+
+
+def budget_resize(spread: dict, equity: float) -> dict:
+    """Contracts a held spread may keep under the lane's current equity share.
+
+    Equity x SPREAD_EQUITY_PCT over the defined loss per contract, floored.
+    Live options buying power is deliberately not in the formula: a held
+    position's collateral is already posted, so remaining BP is near zero by
+    construction and would close everything.
+    """
+    max_loss_per_contract = max(_f(spread.get("width")) - _f(spread.get("entry_credit")), 0.01) * 100
+    budget = max(_f(equity), 0.0) * config.SPREAD_EQUITY_PCT
+    allowed = int(budget // max_loss_per_contract)
+    qty = int(_f(spread.get("qty")))
+    return {
+        "budget_usd": round(budget, 2),
+        "share_pct": config.SPREAD_EQUITY_PCT,
+        "max_loss_per_contract": round(max_loss_per_contract, 2),
+        "allowed_qty": allowed,
+        "close_qty": max(qty - allowed, 0),
+    }
+
+
 def close_order_request(
     spread: dict,
     action: str,
@@ -442,7 +640,7 @@ def close_order_request(
     client_order_id: str,
 ) -> dict:
     """Build an atomic close request using Alpaca's documented leg intents."""
-    emergency = action in {"stop_loss", "long_strike_breach", "pin_risk"}
+    emergency = action in EMERGENCY_ACTIONS
     request = {
         "qty": str(spread["qty"]),
         "type": "market" if emergency else "limit",
@@ -495,7 +693,7 @@ def submit_close(
         "limit_price": request.get("limit_price"),
         "response": result,
     }
-    if metrics["action"] != "annual_target_resize":
+    if metrics["action"] not in {"annual_target_resize", "budget_resize"}:
         risk_state.record_exit(
             spread,
             metrics,
@@ -888,6 +1086,11 @@ def cycle(execute: bool = False) -> dict:
             )
             ratchet = risk_state.observe(spread, metrics, now_et)
             metrics.update(ratchet)
+            review = hold_ev_review(
+                spread, quotes, spots.get(spread["underlying"], 0.0), now_et, market_open
+            )
+            if review is not None:
+                metrics["hold_ev"] = review
             metrics["action"], metrics["decision"] = decide_exit(
                 metrics, now_et, market_open
             )
@@ -923,6 +1126,43 @@ def cycle(execute: bool = False) -> dict:
                             "error": error,
                         })
                         metrics["decision"] = f"resize_submit_failed: {error}"
+            elif (
+                config.MONITOR_BUDGET_RESIZE_ENABLED
+                and not metrics.get("action")
+                and budget_resize(spread, target.get("equity", 0.0))["close_qty"] > 0
+            ):
+                # Only while the monitor would otherwise hold: any exit,
+                # protective or expectancy, takes the whole position first.
+                resize = budget_resize(spread, target.get("equity", 0.0))
+                close_qty = resize["close_qty"]
+                metrics["action"] = "budget_resize"
+                metrics["close_qty"] = close_qty
+                metrics["resize_to_qty"] = resize["allowed_qty"]
+                metrics["budget_resize"] = resize
+                metrics["decision"] = (
+                    f"spread share {resize['share_pct']:.0%} of equity "
+                    f"(${resize['budget_usd']:,.0f}) allows {resize['allowed_qty']} "
+                    f"at ${resize['max_loss_per_contract']:.0f} defined loss each; "
+                    f"trims {close_qty}, keeps {resize['allowed_qty']}"
+                )
+                if execute:
+                    try:
+                        submission = submit_close(
+                            {**spread, "qty": close_qty}, metrics, now_et
+                        )
+                        submission["close_qty"] = close_qty
+                        close_submissions.append(submission)
+                        metrics["decision"] = f"submitted_budget_resize: {metrics['decision']}"
+                    except Exception as exc:
+                        error = f"{type(exc).__name__}: {exc}"
+                        close_submissions.append({
+                            "action": metrics["action"],
+                            "close_qty": close_qty,
+                            "error": error,
+                        })
+                        metrics["decision"] = f"resize_submit_failed: {error}"
+                else:
+                    metrics["decision"] = f"would_budget_resize: {metrics['decision']}"
             elif metrics.get("action") and execute:
                 try:
                     submission = submit_close(spread, metrics, now_et)
@@ -984,6 +1224,11 @@ def _validate_policy() -> None:
         raise ValueError("PACAPOUNCE_MONITOR_RATCHET_CONFIRMATIONS must be positive")
     if config.MONITOR_VOL_WINDOW_SAMPLES < 3:
         raise ValueError("PACAPOUNCE_MONITOR_VOL_WINDOW_SAMPLES must be at least 3")
+    try:
+        hours, minutes = (int(part) for part in config.MONITOR_HOLD_EV_AFTER_ET.split(":"))
+        wall_time(hours, minutes)
+    except (TypeError, ValueError):
+        raise ValueError("PACAPOUNCE_MONITOR_HOLD_EV_AFTER_ET must be HH:MM") from None
     if not 0 < config.REENTRY_BP_UTILIZATION <= 1:
         raise ValueError("PACAPOUNCE_REENTRY_BP_UTILIZATION must be in (0, 1]")
     if config.REENTRY_COOLDOWN_MIN < 0 or config.REENTRY_STABLE_MIN < 1:

@@ -118,6 +118,17 @@ def realized_vol(symbol: str) -> float:
     return vol_profile(symbol).get("ewma", 0.0)
 
 
+def refresh_realized_vol(symbol: str) -> float:
+    """Realised vol from fresh bars.
+
+    The cache is right for an entry decision made once; a monitor that lives
+    across sessions must not price today's position on a number it fetched
+    yesterday.
+    """
+    _VOL_CACHE.pop(symbol, None)
+    return realized_vol(symbol)
+
+
 def _leg(sym: str, snap: dict) -> dict | None:
     """Flatten one chain entry into bid/ask/delta, or None if unusable."""
     q = snap.get("latestQuote") or snap.get("latest_quote") or {}

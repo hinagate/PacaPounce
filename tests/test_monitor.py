@@ -8,9 +8,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.monitor import (  # noqa: E402
     annual_target_status,
+    budget_resize,
     chase_opening_order,
     close_order_request,
     decide_exit,
+    hold_ev_review,
+    hold_expectancy,
     pair_spreads,
     parse_occ,
 )
@@ -470,3 +473,158 @@ def test_opening_chase_stays_flat_when_bp_does_not_return_after_cancel(
     assert result["reason"] == "collateral unavailable after cancellation"
     assert any(call["tool"] == "cancel_order_by_id" for call in calls)
     assert not any(call["tool"] == "place_option_order" for call in calls)
+
+
+def test_hold_ev_negative_closes_only_behind_the_defined_risk_exits():
+    """The gate's model re-run on the position is an exit of expectancy, so it
+    is ordered after the exits of risk and never on expiry day."""
+    now = datetime(2026, 9, 2, 10, 30, tzinfo=ET)
+    negative = {"close": True, "negatives": 2, "detail": "hold EV $-5.97/contract"}
+    action, decision = decide_exit(_metrics(hold_ev=negative), now, True, profit_exits=False)
+    assert action == "hold_ev_negative"
+    assert "negative expectancy" in decision and "2 consecutive" in decision
+
+    # Not yet confirmed: hold.
+    assert decide_exit(_metrics(hold_ev={"close": False, "negatives": 1}), now, True,
+                       profit_exits=False) == (None, "hold_to_expiry")
+    # Protection first.
+    assert decide_exit(_metrics(hold_ev=negative, loss_used=0.70), now, True)[0] == "stop_loss"
+    assert decide_exit(_metrics(hold_ev=negative, spot=750.5), now, True)[0] == "long_strike_breach"
+    # Expiry day belongs to the pin-risk rule.
+    action, decision = decide_exit(
+        _metrics(hold_ev=negative, is_expiry_day=True), datetime(2026, 9, 4, 12, 0, tzinfo=ET), True
+    )
+    assert action is None and "expiry" in decision
+    # A limit, not a market order: the risk is expectancy, not time.
+    request = close_order_request(
+        {"qty": 111, "short_symbol": "S", "long_symbol": "L"}, "hold_ev_negative", 0.35, "cid"
+    )
+    assert request["type"] == "limit"
+
+
+def _review_spread():
+    return {
+        "short_symbol": "SPY260904C00770000", "long_symbol": "SPY260904C00772000",
+        "underlying": "SPY", "expiry": "2026-09-04", "right": "C",
+        "short_strike": 770.0, "long_strike": 772.0, "width": 2.0,
+        "entry_credit": 0.30, "qty": 111,
+    }
+
+
+def test_hold_ev_review_confirms_across_the_interval_and_resets_on_approval(monkeypatch):
+    import scripts.monitor as monitor
+    monkeypatch.setattr(config, "MONITOR_HOLD_EV_EXIT_ENABLED", True)
+    monkeypatch.setattr(config, "MONITOR_HOLD_EV_AFTER_ET", "09:45")
+    monkeypatch.setattr(config, "MONITOR_HOLD_EV_INTERVAL_MIN", 5)
+    monkeypatch.setattr(config, "MONITOR_HOLD_EV_CONFIRMATIONS", 2)
+    monkeypatch.setattr(monitor, "_HOLD_EV", {})
+    verdicts = []
+    evaluated = []
+
+    def fake_eval(spread, quotes, spot, now_et):
+        evaluated.append(now_et)
+        return {"evaluated": True, "hold_ok": verdicts.pop(0), "detail": "d"}
+
+    spread = _review_spread()
+    at = lambda h, m: datetime(2026, 9, 2, h, m, tzinfo=ET)  # noqa: E731
+    # Before the review window nothing is evaluated.
+    review = hold_ev_review(spread, {}, 762.0, at(9, 40), True, evaluate=fake_eval)
+    assert review["close"] is False and review["reason"] == "not_yet_reviewed" and not evaluated
+    # First review: negative, but one review is not a decision.
+    verdicts[:] = [False]
+    review = hold_ev_review(spread, {}, 762.0, at(9, 45), True, evaluate=fake_eval)
+    assert review["negatives"] == 1 and review["close"] is False
+    # Inside the interval the last result is carried, not re-evaluated.
+    review = hold_ev_review(spread, {}, 762.0, at(9, 47), True, evaluate=fake_eval)
+    assert len(evaluated) == 1 and review["negatives"] == 1
+    # Second consecutive negative confirms.
+    verdicts[:] = [False]
+    review = hold_ev_review(spread, {}, 762.0, at(9, 50), True, evaluate=fake_eval)
+    assert review["negatives"] == 2 and review["close"] is True
+    # One positive review resets the count.
+    verdicts[:] = [True]
+    review = hold_ev_review(spread, {}, 762.0, at(9, 55), True, evaluate=fake_eval)
+    assert review["negatives"] == 0 and review["close"] is False
+    # An evaluation that could not run leaves the count alone.
+    verdicts[:] = [False]
+    hold_ev_review(spread, {}, 762.0, at(10, 0), True, evaluate=fake_eval)
+    review = hold_ev_review(
+        spread, {}, 762.0, at(10, 5), True,
+        evaluate=lambda *a: {"evaluated": False, "reason": "expiry_day"},
+    )
+    assert review["negatives"] == 1 and review["close"] is False
+    # A new session starts clean.
+    review = hold_ev_review(
+        spread, {}, 762.0, datetime(2026, 9, 3, 9, 40, tzinfo=ET), True, evaluate=fake_eval
+    )
+    assert review["negatives"] == 0
+    # Switched off, the review is absent rather than silently approving.
+    monkeypatch.setattr(config, "MONITOR_HOLD_EV_EXIT_ENABLED", False)
+    assert hold_ev_review(spread, {}, 762.0, at(10, 10), True, evaluate=fake_eval) is None
+
+
+def test_hold_expectancy_is_the_gates_model_at_the_closing_debit(monkeypatch):
+    """Same function as the entry gate, credit = executable debit, no friction."""
+    import scripts.monitor as monitor
+    chain = {}
+    for strike, iv, delta in (
+        (765.0, 0.150, 0.40), (767.0, 0.145, 0.30), (770.0, 0.141, 0.16),
+        (772.0, 0.139, 0.09), (775.0, 0.137, 0.04), (777.0, 0.136, 0.02),
+    ):
+        # Option prices roughly consistent with a 763 spot and 2 days.
+        mid = max(0.02, round((delta * 4.5), 2))
+        chain[f"SPY260904C{int(strike * 1000):08d}"] = {
+            "latestQuote": {"bp": round(mid - 0.01, 2), "ap": round(mid + 0.01, 2)},
+            "impliedVolatility": iv,
+            "greeks": {"delta": delta},
+        }
+    monkeypatch.setattr(monitor.mcp_client, "call_many_all_pages", lambda calls: calls)
+    monkeypatch.setattr(monitor.mcp_client, "run", lambda calls: [{"snapshots": chain}])
+    quotes = {
+        "SPY260904C00770000": {"bid": 0.75, "ask": 0.76, "mid": 0.755},
+        "SPY260904C00772000": {"bid": 0.41, "ask": 0.42, "mid": 0.415},
+    }
+    now = datetime(2026, 9, 2, 10, 0, tzinfo=ET)
+
+    monkeypatch.setattr(monitor, "refresh_realized_vol", lambda symbol: 0.1014)
+    calm = hold_expectancy(_review_spread(), quotes, 763.35, now)
+    assert calm["evaluated"] and calm["dte"] == 2
+    assert calm["executable_debit"] == 0.35 and calm["realized_vol"] == 0.1014
+    assert calm["ev_basis"] == "skew+drift"
+    # Retained debit minus modelled loss, per contract, times the position.
+    assert abs(calm["hold_ev_usd"] - (35.0 - calm["expected_loss_usd"])) < 0.01
+    assert calm["hold_ev_total_usd"] == round(calm["hold_ev_usd"] * 111, 2)
+    assert calm["hold_ok"] is (calm["hold_ev_usd"] > config.MIN_EV_USD)
+
+    # Realised vol at the chain's implied level removes the premium that
+    # justified holding; the verdict follows the number, not the position.
+    monkeypatch.setattr(monitor, "refresh_realized_vol", lambda symbol: 0.30)
+    stormy = hold_expectancy(_review_spread(), quotes, 763.35, now)
+    assert stormy["expected_loss_usd"] > calm["expected_loss_usd"]
+    assert stormy["hold_ev_usd"] < calm["hold_ev_usd"]
+    assert stormy["hold_ok"] is False
+
+    # Fail safe when the model cannot run: hold, and say why.
+    monkeypatch.setattr(monitor, "refresh_realized_vol", lambda symbol: 0.0)
+    assert hold_expectancy(_review_spread(), quotes, 763.35, now) == {
+        "evaluated": False, "reason": "realized_vol_unavailable"
+    }
+    expiry = hold_expectancy(
+        _review_spread(), quotes, 763.35, datetime(2026, 9, 4, 10, 0, tzinfo=ET)
+    )
+    assert expiry == {"evaluated": False, "reason": "expiry_day"}
+
+
+def test_budget_resize_trims_a_held_spread_to_the_current_equity_share(monkeypatch):
+    monkeypatch.setattr(config, "SPREAD_EQUITY_PCT", 0.10)
+    spread = _review_spread()
+    resize = budget_resize(spread, 95_076.90)
+    # $9,507.69 over $170 of defined loss per contract.
+    assert resize["max_loss_per_contract"] == 170.0
+    assert resize["allowed_qty"] == 55 and resize["close_qty"] == 56
+    # Inside the budget nothing is trimmed; the share that opened it was 20%.
+    monkeypatch.setattr(config, "SPREAD_EQUITY_PCT", 0.20)
+    assert budget_resize(spread, 95_076.90)["close_qty"] == 0
+    # The trim is an atomic limit, and no exit is recorded for a partial close.
+    request = close_order_request(spread, "budget_resize", 0.35, "cid")
+    assert request["type"] == "limit" and request["order_class"] == "mleg"
