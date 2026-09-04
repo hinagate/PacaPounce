@@ -168,6 +168,8 @@ def test_dashboard_contains_ai_intent_and_ordered_gate_catalog(tmp_path, monkeyp
     assert "Alpaca options eligibility" in html
     assert "Tournament risk disclosure" in html
     assert "Options buying power" in html
+    assert "Total P&amp;L (vs $100,000 start)" in html
+    assert "Total account P&amp;L" in html
     assert "Economic EV" in html
     assert "MCP session supervisor" in html
     assert "Account identity" in html
@@ -204,6 +206,13 @@ def test_dashboard_contains_ai_intent_and_ordered_gate_catalog(tmp_path, monkeyp
     assert "$138.00" in html
     assert "Snapshot generated" in html
     assert len(gates.GATE_CATALOG) == 16
+
+
+def test_total_account_pnl_formats_dollars_and_return():
+    assert (
+        build_dashboard.account_total_pnl_text(5_851.37, 0.0585137)
+        == "$5,851.37 (+5.85%)"
+    )
 
 
 def test_presentation_collapses_retries_and_keeps_approved_results():

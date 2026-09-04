@@ -28,6 +28,14 @@ TRADE_BASE = "https://paper-api.alpaca.markets"   # paper only, by design
 # Hackathon submission account. Judges use this ID to pull the trading activity
 # they score P&L against. Read from .env so it is never hard-coded to a stale one.
 ALPACA_ACCOUNT_ID = os.getenv("ALPACA_ACCOUNT_ID", "")
+# Fixed baseline for the paper competition account.  Alpaca exposes current and
+# prior-close equity, but not the account's original competition balance, so
+# cumulative account P&L needs an explicit, auditable baseline.
+STARTING_EQUITY_USD = float(
+    os.getenv("PACAPOUNCE_STARTING_EQUITY_USD", "100000")
+)
+if STARTING_EQUITY_USD <= 0:
+    raise ValueError("PACAPOUNCE_STARTING_EQUITY_USD must be positive")
 DATA_BASE = "https://data.alpaca.markets"
 # Basic plan serves 'indicative' (derived, not true OPRA). Algo Trader Plus -> 'opra'.
 OPTIONS_FEED = os.getenv("PACAPOUNCE_OPTIONS_FEED", "indicative")

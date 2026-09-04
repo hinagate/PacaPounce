@@ -337,6 +337,13 @@ def signed(v, digits: int = 2) -> str:
     return f"{'-' if v < 0 else '+'} ${abs(v):,.{digits}f}"
 
 
+def account_total_pnl_text(total_pnl, total_return) -> str:
+    """Format cumulative account performance without confusing it with daily P&L."""
+    if total_pnl is None or total_return is None:
+        return "-"
+    return f"{money(total_pnl)} ({total_return:+.2%})"
+
+
 def overview_time(value: object) -> str:
     """Compact Eastern timestamp for the judge-facing decision table."""
     try:
@@ -697,8 +704,16 @@ def build(live: bool = True, output: Path | None = None,
 
     pnl_err = pl.get("error")
     total_pnl = pl.get("total_pnl")
+    account_total_pnl = pl.get("account_total_pnl")
+    account_total_return = pl.get("account_total_return")
+    account_total_return_text = (
+        f"{account_total_return:+.2%}" if account_total_return is not None else "-"
+    )
     account_daily_pnl = pl.get("account_daily_pnl")
     pnl_cls = "" if pnl_err else ("pos" if (account_daily_pnl or 0) > 0 else "neg")
+    account_total_pnl_cls = (
+        "" if pnl_err else ("pos" if (account_total_pnl or 0) >= 0 else "neg")
+    )
 
     # Judge-facing account overview. The account number is verified against the
     # configured hackathon account so a stale key can't silently misreport it.
@@ -720,6 +735,8 @@ def build(live: bool = True, output: Path | None = None,
             f"{account_display} {'VERIFIED' if account_match else 'UNVERIFIED'}"
         )),
         ("Equity", money(pl.get("equity"))),
+        (f"Total P&L (vs {money(config.STARTING_EQUITY_USD, 0)} start)",
+         account_total_pnl_text(account_total_pnl, account_total_return)),
         ("Cash", money(pl.get("cash"))),
         ("Options buying power", money(pl.get("options_buying_power"))),
         ("Daily P&L", money(account_daily_pnl)),
@@ -1098,6 +1115,9 @@ audit live in the <b>Presentation &amp; Execution</b> table below and in
 <div class="crit"><span class="n">01</span><h2>P&amp;L Performance</h2>
 <span class="why">Alpaca paper account, live</span></div>
 <div class="tiles">
+  <div class="tile"><div class="k">Total account P&amp;L</div>
+    <div class="v {account_total_pnl_cls}">{money(account_total_pnl)}</div>
+    <div class="f">{account_total_return_text} return from {money(config.STARTING_EQUITY_USD, 0)} start</div></div>
   <div class="tile"><div class="k">Account daily P&amp;L</div>
     <div class="v {pnl_cls}">{money(account_daily_pnl)}</div>
     <div class="f">equity minus last equity</div></div>

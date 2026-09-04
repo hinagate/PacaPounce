@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from . import ledger, mcp_client, mean_reversion
+from . import config, ledger, mcp_client, mean_reversion
 
 
 def _f(v, default=0.0) -> float:
@@ -16,6 +16,15 @@ def _f(v, default=0.0) -> float:
         return float(v)
     except (TypeError, ValueError):
         return default
+
+
+def account_performance(equity: float | None,
+                        starting_equity: float) -> tuple[float | None, float | None]:
+    """Cumulative account P&L and return against an explicit starting balance."""
+    if equity is None or starting_equity <= 0:
+        return None, None
+    total_pnl = round(float(equity) - starting_equity, 2)
+    return total_pnl, total_pnl / starting_equity
 
 
 def _rows(res, key: str) -> list[dict]:
@@ -224,6 +233,9 @@ def summary(days: int = 30) -> dict:
 
     realized = realized_pnl_from_fills(activity)
     unrealized = round(sum(p["unrealized_pl"] for p in positions), 2)
+    account_total_pnl, account_total_return = account_performance(
+        acct.get("equity"), config.STARTING_EQUITY_USD
+    )
 
     entries = ledger.load()
     executed = [e for e in entries if (e.get("execution") or {}).get("submitted")]
@@ -245,6 +257,9 @@ def summary(days: int = 30) -> dict:
         "account_number": acct.get("account_number"),
 
         "equity": acct.get("equity"),
+        "starting_equity": config.STARTING_EQUITY_USD,
+        "account_total_pnl": account_total_pnl,
+        "account_total_return": account_total_return,
         "last_equity": acct.get("last_equity"),
         "account_daily_pnl": round(
             (acct.get("equity") or 0.0) - (acct.get("last_equity") or 0.0), 2
