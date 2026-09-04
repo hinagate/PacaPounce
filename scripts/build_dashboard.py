@@ -1017,6 +1017,13 @@ account&#39;s P&amp;L.</div>"""
 <p class="sub">AI hunts. Alpaca MCP verifies. PacaPounce trades only when the opportunity survives.
 The LLM is creative but untrusted: it may suggest any thesis, but only deterministic,
 independently validated policy is allowed to touch the broker. Gate {summary.get('gate_version')}.</p>
+<div class="note"><b>What this page is.</b> A read-only record of an autonomous options
+trading agent running on the Alpaca <b>paper</b> account named below - no real money. It was
+built for the <a href="https://lablab.ai/ai-hackathons/alpaca-ai-trading-agents-hackathon">Alpaca
+AI Trading Agents Hackathon</a>, and it reports what the agent did, what it refused to do, and
+why, so the reasoning can be checked rather than taken on trust. Source, tests and the full
+decision log: <a href="https://github.com/hinagate/PacaPounce">github.com/hinagate/PacaPounce</a>.
+Nothing here is financial advice or evidence of future performance.</div>
 
 <section aria-labelledby="live-overview">
 <div class="overview-head"><div><h2 id="live-overview">Live account overview</h2>
