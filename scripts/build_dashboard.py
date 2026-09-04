@@ -1120,7 +1120,7 @@ audit live in the <b>Presentation &amp; Execution</b> table below and in
     <div class="f">options approved L{pl.get('options_approved_level', '-')} / enabled L{pl.get('options_level', '-')}</div></div>
   <div class="tile"><div class="k">Options buying power</div>
     <div class="v">{money(pl.get('options_buying_power'), 0)}</div>
-    <div class="f">binding full-capital budget; equity multiplier {pl.get('multiplier', '-')}x</div></div>
+    <div class="f">the binding budget; options are authorised separately from margin</div></div>
   <div class="tile"><div class="k">Orders sent</div><div class="v">{banner_orders}</div>
     <div class="f">both lanes; {summary.get('approved', 0)} of them spread-lane gate approvals</div></div>
 </div>
@@ -1145,8 +1145,7 @@ rather than from a prudent risk budget. The credit-spread lane may carry
 {config.OPTION_MR_TOTAL_PREMIUM_PCT:.0%} of equity in premium, and for a long option the
 premium paid <em>is</em> the maximum loss; one position's modelled 2xATR stop is capped at
 {config.OPTION_MR_MAX_STOP_RISK_PCT:.0%} of equity. Both lanes can be open at once, so a bad
-week can consume a large share of the account. The 4x equity multiplier is displayed but never
-substituted for Alpaca's separate options buying-power authorization.</div>
+week can consume a large share of the account.</div>
 </section>
 
 <section>
