@@ -32,7 +32,7 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from veto import config, gates, ledger, mean_reversion, risk_state  # noqa: E402
+from veto import config, gates, ledger, mean_reversion, risk_state, sizing  # noqa: E402
 
 PUBLIC_OUT = ROOT / "dashboard" / "index.html"
 OUT = ROOT / "dashboard" / "runtime" / "index.html"
@@ -921,6 +921,10 @@ evidence and are never mixed into competition P&amp;L.</div>"""
         "closing_orders": pl.get("closing_orders") or 0,
         "mr_ai_calls_display": mr_ai_calls,
     }
+    # Quoted in the risk disclosure, so it cannot drift from the sizing.
+    spread_lane_budget = sizing.spread_budget(
+        pl.get('options_buying_power') or 0.0, pl.get('equity') or 0.0,
+        config.SPREAD_EQUITY_PCT)
     funnel_chart = funnel_svg(presentation)
 
     # Predicted gate EV vs. what the account actually realized.
@@ -1134,11 +1138,15 @@ next to what the account actually realized. A gate that forecasts well keeps the
 {pnl_block}
 {lifecycle_block}
 <div class="note warn"><b>Tournament risk disclosure.</b> The configured
-<code>{config.SIZING_MODE}</code> objective may allocate up to
-{config.OPTIONS_BP_UTILIZATION:.0%} of Alpaca's remaining options buying power to one
-defined-risk spread. One maximum-loss outcome can therefore consume nearly the entire
-options collateral budget. The 4x equity multiplier is displayed but never substituted
-for Alpaca's separate options buying-power authorization.</div>
+<code>{config.SIZING_MODE}</code> objective sizes each lane from its own share of equity
+rather than from a prudent risk budget. The credit-spread lane may carry
+{config.SPREAD_EQUITY_PCT:.0%} of equity as defined maximum loss
+({money(spread_lane_budget, 0)} at the equity above). The long-call lane may hold up to
+{config.OPTION_MR_TOTAL_PREMIUM_PCT:.0%} of equity in premium, and for a long option the
+premium paid <em>is</em> the maximum loss; one position's modelled 2xATR stop is capped at
+{config.OPTION_MR_MAX_STOP_RISK_PCT:.0%} of equity. Both lanes can be open at once, so a bad
+week can consume a large share of the account. The 4x equity multiplier is displayed but never
+substituted for Alpaca's separate options buying-power authorization.</div>
 </section>
 
 <section>
