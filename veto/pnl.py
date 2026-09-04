@@ -256,6 +256,11 @@ def summary(days: int = 30) -> dict:
         "options_approved_level": acct.get("options_approved_level"),
         "options_level": acct.get("options_level"),
         "closed_round_trips": closed_round_trips(activity),
+        # A spread closes both legs on one order, so distinct close timestamps
+        # count closing orders rather than legs.
+        "closing_orders": len({
+            str(m["closed_ts"])[:19] for m in _matched_fills(activity) if m["closed_ts"]
+        }),
         "realized_pnl": realized,
         "unrealized_pnl": unrealized,
         "total_pnl": round(realized + unrealized, 2),
