@@ -2,10 +2,10 @@
 
 > **Team:** a-meowmeow
 
-> Built for the
+> Originally built for the
 > [Alpaca AI Trading Agents Hackathon](https://lablab.ai/ai-hackathons/alpaca-ai-trading-agents-hackathon).
-> See the [judge-facing submission guide](HACKATHON_SUBMISSION.md) for the live
-> paper result, criteria mapping, demo script, and social launch package.
+> [HACKATHON_SUBMISSION.md](HACKATHON_SUBMISSION.md) records that week's paper
+> result and how the entry stack maps to the event's criteria.
 
 **The patient AI trading agent: it hunts, verifies, then pounces.**
 
@@ -17,25 +17,25 @@
 > You are solely responsible for any use of this software and assume all
 > resulting risk.
 
-Built for the Alpaca AI Trading Agents Hackathon. The LLM is creative but untrusted:
-it can suggest any options thesis it likes, but only deterministic, independently
-tested policy is allowed to touch the broker.
+The LLM is creative but untrusted: it can suggest any options thesis it likes,
+but only deterministic, independently tested policy is allowed to touch the
+broker.
 
 The implementation retains `veto` as the internal gate-engine package and
 broker client-ID prefix so PacaPounce can reconcile earlier orders safely across
 process restarts. Public runtime configuration uses `PACAPOUNCE_*` variables.
 
-> **Competition paper account:** `PA3ZX2FIASSZ` · $100,000 start · options level 3.
-> The judged P&L lives on this account; the dashboard banner verifies the live
-> account number matches before showing results.
+> **Paper account:** `PA3ZX2FIASSZ` · $100,000 start · options level 3.
+> Every result in this repository comes from that account; the dashboard verifies
+> the live account number matches before it shows a single figure.
 
-### Judge in 60 seconds
+### Run it in 60 seconds
 
 ```powershell
 cd PacaPounce
 .venv\Scripts\python.exe run.py --summary                # ledger stats
 .venv\Scripts\python.exe scripts\build_dashboard.py      # ignored live snapshot
-start dashboard\index.html                                  # open the judge view
+start dashboard\index.html                                  # open the dashboard
 ```
 
 The dashboard is a single static file (data embedded, works from `file://` or any
@@ -100,14 +100,20 @@ until four-leg construction, payoff, sizing, monitoring, and validation exist.
 ## Second Paper strategy: NDX30 long-call mean reversion
 
 The same `run.py --loop` process gets one deterministic second-strategy decision
-at each decision window of a normal 16:00 session — 10:00 and 15:45 ET for the
-competition — scanning 14 liquid Nasdaq underlyings and
-ranks names whose completed 15:30 bar is above a rising SMA200 while Wilder
-RSI(2) is below 10. Alphabet share classes are issuer-deduplicated. The best
-surviving signal is expressed as a single long call—never as stock. The
-credit-spread lane holds back a 5% slice of options buying power so this lane
-can trade at all; without that reserve, full-buying-power sizing deployed
-everything and the second strategy was structurally unable to place an order.
+at each configured decision window of a normal 16:00 session — as shipped, 10:00
+through 15:00 on the hour plus 15:45 ET — scanning 12 liquid Nasdaq underlyings.
+It ranks names whose completed bar is above a rising SMA200 while Wilder RSI(2)
+is below `PACAPOUNCE_OPTION_MR_RSI_MAX`, shipped at 25; the 2024 study behind
+the signal used 10, so the deployed threshold is a looser variant chosen for
+coverage. One share class per issuer is scanned. The best surviving signal is
+expressed as a single long call—never as stock.
+
+Each lane owns a share of account equity rather than competing for one pool: the
+credit-spread lane may carry `PACAPOUNCE_SPREAD_EQUITY_PCT` of equity as defined
+loss, this lane up to `PACAPOUNCE_OPTION_MR_TOTAL_PREMIUM_PCT` in premium, so
+both can hold positions at once. An earlier design let full-buying-power sizing
+deploy everything into the first approved spread, which left this lane
+structurally unable to place an order at all.
 
 - Python selects a 14–30 DTE call from the live Alpaca chain, requires delta
   0.55–0.85, relative bid/ask at most 6% and a crossing cost at most 10% of a
@@ -121,8 +127,8 @@ everything and the second strategy was structurally unable to place an order.
   than one bulk allocation.
 - Quantity comes from the active sizing objective. `risk_budget` targets 0.5% of
   equity at an underlying 2×ATR14 stop model; `tournament` sizes from the premium
-  budget directly, because the competition scores the upper tail rather than the
-  mean, but the modeled loss at the 2×ATR stop still binds at
+  budget directly, because a tournament objective scores the upper tail rather
+  than the mean, but the modeled loss at the 2×ATR stop still binds at
   `OPTION_MR_MAX_STOP_RISK_PCT` (15% of equity per position). Sized on premium
   alone, what a position risked at its stop was whatever delta the chain
   happened to offer — 54% of premium at 0.8, roughly all of it at 0.6 — which is
@@ -253,7 +259,7 @@ works if the assumption holds.
 The credit-spread lane uses `full_buying_power`: after a spread passes the
 economic model, quantity is the largest integer count whose entire defined loss
 fits inside its own equity budget, bounded by Alpaca's live
-`options_buying_power`. The competition sets `PACAPOUNCE_SPREAD_EQUITY_PCT=0.10`
+`options_buying_power`. The shipped configuration sets `PACAPOUNCE_SPREAD_EQUITY_PCT=0.10`
 and `PACAPOUNCE_OPTIONS_BP_UTILIZATION=1.0`, so one approved spread may carry
 about $10,000 of defined maximum loss on the $100,000 account. The result records
 source buying power, the lane budget, quantity, total defined loss, and
@@ -261,14 +267,14 @@ utilization percentage.
 
 This is tournament sizing, not a prudent production allocation — see
 [Tournament mode](#tournament-mode-a-different-objective-stated-as-one) for why
-the remaining capital goes to the convex lane instead of to a bigger spread. Use
-`PACAPOUNCE_SPREAD_EQUITY_PCT=0.95` or `PACAPOUNCE_SIZING_MODE=kelly` outside the
-competition.
+the remaining capital goes to the convex lane instead of to a bigger spread. Set
+`PACAPOUNCE_SPREAD_EQUITY_PCT=0.95` or `PACAPOUNCE_SIZING_MODE=kelly` to run the
+expected-value configuration instead.
 
 This is tournament sizing, not a prudent production allocation. It maximizes
 scored exposure only after all deterministic gates survive, but a single
 maximum-loss outcome can still consume almost the entire paper account. Use
-fractional utilization or `PACAPOUNCE_SIZING_MODE=kelly` outside the competition. The
+fractional utilization or `PACAPOUNCE_SIZING_MODE=kelly` for any other purpose. The
 dashboard discloses the active 100% allocation and its downside explicitly.
 
 Every sized position reports its full outcome distribution, not just its mean. A
@@ -329,19 +335,20 @@ not what excludes out-of-the-money contracts — the delta band is.
 
 ## Tournament mode: a different objective, stated as one
 
-Everything above maximizes **expected value**. The competition does not score
-expected value — it ranks four sessions of P&L. Those are different objectives,
-and optimizing the first cannot win the second.
+Everything above maximizes **expected value**. A short-window contest does not
+score expected value — it ranks a handful of sessions of realized P&L. Those are
+different objectives, and optimizing the first cannot win the second. This mode
+exists because the agent was first run under exactly that constraint.
 
 A credit spread's payoff shape is the reason. It wins about 6% of the capital it
 risks and loses about 94%. Sized at the whole account it produces roughly
 +$3–6k in a good week and -$60k in a bad one. **It cannot produce a placing
 number at any size.** The upper tail is closed by the structure itself.
 
-So for the competition window the agent runs a disclosed second objective:
-maximize the upper tail, not the mean.
+So under that constraint the agent runs a disclosed second objective: maximize
+the upper tail, not the mean.
 
-Measured on the live chain across the 14 tradeable names, holding five sessions
+Measured on the live chain across the tradeable names, holding five sessions
 with $70,000 of premium deployed on a $100,000 account — repriced with each
 contract's own IV and exited at the bid:
 
@@ -507,7 +514,7 @@ instead of against the market. Two defences:
   pass rate is reported on first proposals so revision cannot inflate it.
 
 Every rejected proposal is logged in full to the append-only JSONL audit. The
-judge-facing dashboard keeps that evidence usable by grouping retry attempts into
+dashboard keeps that evidence usable by grouping retry attempts into
 decision windows: it always shows approved/submitted results and only the newest
 representative no-trade outcomes, with the hidden presentation count disclosed.
 
@@ -545,7 +552,7 @@ executable P&L. The entry gate prices a spread on its terminal payoff, and on a
 $2-wide spread the 50% profit target and the trailing ratchet were closing the
 winners early while the losers ran to the breach — simulated on the live SPY
 770/772C the configured monitor was −$520 expected against +$587 for holding to
-expiry with the long-strike breach still armed. The competition therefore runs
+expiry with the long-strike breach still armed. The shipped configuration therefore runs
 with `PACAPOUNCE_MONITOR_PROFIT_EXIT_ENABLED=false`: the spread is held to
 expiry and closed at market only if the underlying crosses the long strike, and
 the spread lane's share of equity is halved to 10% because the trail no longer
@@ -605,10 +612,10 @@ price, so midpoint-to-natural friction is not charged twice. An MCP
 <code>get_orders(status=all)</code> and records a successful chase only after the
 same client ID appears with an Alpaca broker order ID. Missing or terminal
 replacements are logged as failures.
-The configured submission account must also match MCP's live `account_number`.
+The configured account must also match MCP's live `account_number`.
 Ledger, monitor state, and MCP telemetry are stored below an account-specific
 runtime directory, so resetting keys cannot mix a previous account's decisions
-or profit-ratchet history into the competition record.
+or profit-ratchet history into the current account's record.
 
 The dashboard's latest-position lifecycle joins the persisted deterministic exit
 reason to broker-owned orders and positions through MCP. It shows the trigger,
@@ -636,7 +643,7 @@ is still allowed. The risk monitor never creates entries.
 
 The dashboard still converts the 8% annual benchmark to a geometric
 252-trading-day target against Alpaca `last_equity`—about $30.54 per day at
-$100k. In hackathon mode it is measurement only. Quantity instead uses 100% of
+$100k. Under the tournament objective it is measurement only. Quantity instead uses 100% of
 the broker-reported options buying power after every other gate survives. The
 agent does not treat Alpaca's equity `multiplier` as options capital: options use
 their separate broker field and the maximum loss of the protected spread.
