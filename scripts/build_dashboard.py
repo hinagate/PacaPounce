@@ -986,13 +986,8 @@ account&#39;s P&amp;L.</div>"""
 
     if published:
         refresh_meta = ""
-        refresh_button = (
-            '<div class="note">This is a frozen snapshot, not a live feed. Every figure '
-            f'above is read-only broker state for Alpaca paper account '
-            f'<code>{config.ALPACA_ACCOUNT_ID}</code> at the timestamp shown, and can be '
-            'verified against that account directly.</div>'
-        )
-        snapshot_line = f"Snapshot taken {built_at} ET · published copy, not auto-updating"
+        refresh_button = ""
+        snapshot_line = f"Snapshot taken {built_at} ET"
     else:
         refresh_meta = (
             f'<meta http-equiv="refresh" content="{config.DASHBOARD_REFRESH_INTERVAL_SEC}">'
@@ -1014,9 +1009,6 @@ account&#39;s P&amp;L.</div>"""
 
 <h1>PacaPounce</h1>
 <p class="sub" style="margin-bottom:8px"><b>Team a-meowmeow</b> · The patient AI trading agent</p>
-<p class="sub">AI hunts. Alpaca MCP verifies. PacaPounce trades only when the opportunity survives.
-The LLM is creative but untrusted: it may suggest any thesis, but only deterministic,
-independently validated policy is allowed to touch the broker. Gate {summary.get('gate_version')}.</p>
 <div class="note"><b>What this page is.</b> A read-only record of an autonomous options
 trading agent running on the Alpaca <b>paper</b> account named below - no real money. It was
 built for the <a href="https://lablab.ai/ai-hackathons/alpaca-ai-trading-agents-hackathon">Alpaca
