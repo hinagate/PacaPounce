@@ -183,8 +183,10 @@ def test_dashboard_contains_ai_intent_and_ordered_gate_catalog(tmp_path, monkeyp
     assert "Re-entry improvement" in html
     assert "Second options strategy" in html
     assert "NDX30_CALL_MR_01" in html
-    assert "PF 1.394" in html
-    assert "not historical option returns" in html
+    # The 2024 signal study is no longer shown: it measured a different
+    # configuration on stock, and this lane is judged on the live account.
+    assert "PF 1.394" not in html
+    assert "No historical option returns stand behind" in html
     assert "Second-strategy MCP lane" in html
     assert "place_option_order" in html
     assert "No stock order exists" in html

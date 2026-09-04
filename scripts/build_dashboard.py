@@ -419,14 +419,6 @@ def load_tools() -> dict:
         return {}
 
 
-def load_mr_validation() -> dict:
-    path = ROOT / "data" / "ndx30_option_mr_validation.json"
-    try:
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except Exception:
-        return {}
-
-
 def enforce_account_boundary(raw_pl: dict, live: bool) -> tuple[dict, str, str, bool, str | None]:
     """Suppress financial fields unless MCP proves the submission identity."""
     live_account = str(raw_pl.get("account_number") or "").strip()
@@ -672,8 +664,6 @@ def build(live: bool = True, output: Path | None = None,
         and row.get("status") in {"entry_pending", "open", "exit_pending"}
     ]
     mr_latest = mr_decisions[-1] if mr_decisions else None
-    mr_validation = load_mr_validation()
-    mr_oos = mr_validation.get("underlying_signal_oos_2024") or {}
     built_at = datetime.now(ZoneInfo("America/New_York")).isoformat(timespec="seconds")
     try:
         audit_rel = config.VERDICT_LOG.relative_to(ROOT).as_posix()
@@ -873,37 +863,39 @@ def build(live: bool = True, output: Path | None = None,
         (mr_latest or {}).get("reason")
         or "awaiting the next 15:45 ET regular-session scan"
     )
+    mr_windows = len(mr_decisions)
+    mr_approved = sum(1 for row in mr_decisions if row.get("status") == "SUBMITTED")
     second_strategy_block = f"""
 <h3 style="font-size:14px;margin:24px 0 8px">Second options strategy · NDX30_CALL_MR_01</h3>
 <div class="tiles">
   <div class="tile"><div class="k">Staging status</div><div class="v" style="font-size:18px">{html_lib.escape(mr_latest_status)}</div>
     <div class="f">{html_lib.escape(mr_latest_reason)}</div></div>
   <div class="tile"><div class="k">Managed long calls</div><div class="v">{len(mr_managed)}</div>
-    <div class="f">maximum {config.OPTION_MR_MAX_POSITIONS}; one new entry/day</div></div>
-  <div class="tile"><div class="k">Underlying signal OOS</div><div class="v pos">PF {float(mr_oos.get('profit_factor') or 0):.3f}</div>
-    <div class="f">{int(mr_oos.get('trades') or 0)} stock-signal trades · not option P&amp;L</div></div>
+    <div class="f">maximum {config.OPTION_MR_MAX_POSITIONS}; {config.OPTION_MR_MAX_ENTRIES_PER_DAY} new entries/day</div></div>
+  <div class="tile"><div class="k">Decision windows</div><div class="v">{mr_windows}</div>
+    <div class="f">{mr_approved} produced an entry</div></div>
   <div class="tile"><div class="k">Options contract</div><div class="v" style="font-size:18px">{config.OPTION_MR_DTE_MIN}-{config.OPTION_MR_DTE_MAX} DTE call</div>
     <div class="f">target delta {config.OPTION_MR_DELTA_TARGET:.2f} · bid/ask cap {config.OPTION_MR_MAX_SPREAD_PCT:.0%}</div></div>
   <div class="tile"><div class="k">Frozen signal</div><div class="v" style="font-size:18px">RSI(2) &lt; {config.OPTION_MR_RSI_MAX:g}</div>
-    <div class="f">price &gt; rising SMA200 · scan 15:45 ET</div></div>
+    <div class="f">price &gt; rising SMA200 · {len(config.OPTION_MR_DECISION_WINDOWS)} scans/session</div></div>
 </div>
 <div class="note"><b>Options-only execution.</b> Python scans {len(config.OPTION_MR_UNIVERSE)}
-liquid Nasdaq underlyings, resolves one real OCC long call from Alpaca, sizes
-to a {config.OPTION_MR_EQUITY_RISK_PCT:.1%} modeled-risk target (one-contract
-ceiling {config.OPTION_MR_ONE_CONTRACT_RISK_CAP_PCT:.0%}) under a
-{config.OPTION_MR_MAX_PREMIUM_PCT:.0%} premium cap, and submits only
+liquid Nasdaq underlyings, resolves one real OCC long call from Alpaca, sizes it under the
+active <code>{config.OPTION_MR_SIZING_MODE}</code> objective - a
+{config.OPTION_MR_MAX_PREMIUM_PCT:.0%} premium cap per position inside a
+{config.OPTION_MR_TOTAL_PREMIUM_PCT:.0%} lane budget, with the modelled 2xATR stop loss capped
+at {config.OPTION_MR_MAX_STOP_RISK_PCT:.0%} of equity - and submits only
 <code>place_option_order</code> limit orders. No stock order exists in the strategy.</div>
-<div class="note warn"><b>Evidence boundary.</b> The 2024 +{float(mr_oos.get('return_pct') or 0):.2f}%
-and PF {float(mr_oos.get('profit_factor') or 0):.3f} validate the underlying timing signal,
-not historical option returns. IV, theta and option bid/ask effects require forward Paper
-evidence and are never mixed into competition P&amp;L.</div>"""
+<div class="note warn"><b>Evidence boundary.</b> No historical option returns stand behind
+this lane. Every figure shown for it is read from the live paper account above; IV, theta and
+option bid/ask effects are measurable only forward, and nothing modelled is mixed into the
+account&#39;s P&amp;L.</div>"""
 
     # --- Charts (proposal-style: more graph, less prose) ---------------------
     # The funnel described the credit-spread lane only, so its last bar could
     # not be reconciled with an account that also holds long calls. Fold the
     # second lane in, and end on the number the account itself reports.
-    mr_windows = len(mr_decisions)
-    mr_approved = sum(1 for row in mr_decisions if row.get("status") == "SUBMITTED")
+
     # Only a candidate that survives every deterministic gate is shown to the
     # model, so these are this lane's model calls.
     mr_ai_calls = sum(
