@@ -1245,11 +1245,15 @@ revisions of the same opportunity from masquerading as five independent vetoes.<
 <th class="num">Friction</th><th class="num">EV net</th><th>AI rationale</th><th>Gate audit</th>
 </tr></thead><tbody id="tb"></tbody></table></div>
 <div class="note"><b>Presentation is bounded; audit is complete.</b> Showing
-{presentation['shown_rows']} of {presentation['raw_attempts']} raw rows: every approved or
-submitted result plus representative outcomes from the newest
-{presentation['recent_window_limit']} decision windows. {presentation['suppressed_rows']}
-older or retry-level rows are omitted from this page. They are not deleted: the full
-append-only record, including every gate result and gate version, remains in
+{presentation['shown_rows']} of {presentation['raw_attempts']} raw rows: <b>every</b> approved or
+submitted result, plus the newest {presentation['recent_window_limit']} decision windows at one
+row each. Selection is by recency, not by sampling, so approvals are over-represented in this
+table by design - {presentation['approved_windows']} of {presentation['shown_rows']} rows here
+against {presentation['approved_windows']} of {presentation['decision_windows']} windows overall.
+The funnel and the rejection breakdown above are computed over all
+{presentation['decision_windows']} windows, not over these rows.
+{presentation['suppressed_rows']} older or retry-level rows are omitted from this page. They are
+not deleted: the full append-only record, including every gate result and gate version, remains in
 <a href="{html_lib.escape(audit_href)}"><code>{html_lib.escape(audit_rel)}</code></a>.</div>
 </section>
 
