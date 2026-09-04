@@ -151,7 +151,8 @@ def test_dashboard_contains_ai_intent_and_ordered_gate_catalog(tmp_path, monkeyp
     assert "Decision log — what the agent did and why" in html
     assert "SUBMITTED" in html
     assert "16/16" in html
-    assert "Open full strategy, 16 gates" in html
+    # The deep-dive is no longer behind a click; assert the content itself.
+    assert "16 gates, one by one" in html
     assert "How AI intelligence becomes a paper trade" in html
     assert "Proposes freely, trades only what survives" in html
     assert "Signal, not retry noise" in html

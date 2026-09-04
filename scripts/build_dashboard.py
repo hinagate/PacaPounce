@@ -91,11 +91,6 @@ margin:0 0 20px}.simple-table table{min-width:0}.simple-table th,.simple-table t
 .simple-table th{background:var(--chip)}.simple-table td:first-child{font-weight:600}
 .decision-why{min-width:280px;max-width:540px;color:var(--muted);line-height:1.45}
 .deep-dive{margin:26px 0 0;border-top:1px solid var(--line);padding-top:18px}
-.deep-dive>summary{list-style:none;cursor:pointer;border:1px solid var(--line);border-radius:10px;
-background:var(--panel);padding:15px 18px;font-weight:650;color:var(--accent)}
-.deep-dive>summary::-webkit-details-marker{display:none}
-.deep-dive>summary:after{content:'+';float:right;font-size:20px;line-height:18px}
-.deep-dive[open]>summary:after{content:'\2212'}
 .deep-dive>section:first-of-type{margin-top:28px}
 .funnel{display:flex;flex-direction:column;gap:9px;margin:14px 0 6px}
 .fn-row{display:flex;align-items:center;gap:12px}
@@ -118,7 +113,13 @@ details summary{cursor:pointer;color:var(--accent);font-size:12px}
 .checks{margin:8px 0 2px;padding-left:0;list-style:none;font-size:12px;white-space:normal}
 .checks li{padding:2px 0;color:var(--muted)}
 .checks .n{color:var(--fail);font-weight:600}.checks .y{color:var(--pass)}
-.thesis{white-space:normal;max-width:330px;color:var(--muted);font-size:12px}
+.thesis{white-space:normal;max-width:260px;color:var(--muted);font-size:12px}
+/* 12 nowrap columns needed ~1535px inside a 1080px page, so the two columns
+   that matter most - AI rationale and gate audit - sat off-screen behind a
+   horizontal scrollbar. Wrapping the headers and tightening the widest cells
+   brings the table back inside the page. */
+thead th{white-space:normal;vertical-align:bottom;line-height:1.25}
+.scroll table{min-width:0}
 .bar{height:7px;border-radius:4px;background:var(--chip);overflow:hidden;margin-top:8px}
 .bar>i{display:block;height:100%;background:var(--accent)}
 .flow{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin:14px 0 12px}
@@ -1024,8 +1025,7 @@ independently validated policy is allowed to touch the broker. Gate {summary.get
 {second_strategy_block}
 </section>
 
-<details class="deep-dive">
-<summary>Open full strategy, {len(gates.GATE_CATALOG)} gates, P&amp;L evidence, and execution audit</summary>
+<div class="deep-dive">
 
 <section>
 <div class="crit"><span class="n">HOW</span><h2>How AI intelligence becomes a paper trade</h2>
@@ -1252,7 +1252,7 @@ append-only record, including every gate result and gate version, remains in
 <a href="{html_lib.escape(audit_href)}"><code>{html_lib.escape(audit_rel)}</code></a>.</div>
 </section>
 
-</details>
+</div>
 </div><script>const DATA={payload};{JS}</script></body></html>"""
 
     destination.parent.mkdir(parents=True, exist_ok=True)
