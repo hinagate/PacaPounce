@@ -68,7 +68,7 @@ padding:13px 16px;font-size:13px;color:var(--muted);margin-top:12px}
 .warn b{color:var(--warn)}
 .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
 table{border-collapse:collapse;width:100%;font-size:13px;min-width:860px}
-th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:top}
 th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
 tbody tr:last-child td{border-bottom:none}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
@@ -113,13 +113,14 @@ details summary{cursor:pointer;color:var(--accent);font-size:12px}
 .checks{margin:8px 0 2px;padding-left:0;list-style:none;font-size:12px;white-space:normal}
 .checks li{padding:2px 0;color:var(--muted)}
 .checks .n{color:var(--fail);font-weight:600}.checks .y{color:var(--pass)}
-.thesis{white-space:normal;max-width:260px;color:var(--muted);font-size:12px}
+.thesis{white-space:normal;min-width:230px;max-width:300px;color:var(--muted);font-size:12px}
+.gate-audit{white-space:normal;min-width:300px}
+@media(min-width:1200px){.scroll.full{margin-left:calc(580px - 50vw);margin-right:calc(580px - 50vw)}}
 /* 12 nowrap columns needed ~1535px inside a 1080px page, so the two columns
    that matter most - AI rationale and gate audit - sat off-screen behind a
    horizontal scrollbar. Wrapping the headers and tightening the widest cells
    brings the table back inside the page. */
-thead th{white-space:normal;vertical-align:bottom;line-height:1.25}
-.scroll table{min-width:0}
+thead th{white-space:normal;vertical-align:bottom;line-height:1.25}
 .bar{height:7px;border-radius:4px;background:var(--chip);overflow:hidden;margin-top:8px}
 .bar>i{display:block;height:100%;background:var(--accent)}
 .flow{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin:14px 0 12px}
@@ -192,7 +193,7 @@ R.forEach(r=>{
    <td class="num ${e.ev_net_usd>0?'pos':'neg'}"><b>${e.ev_net_usd!=null?'$'+f(e.ev_net_usd):'-'}</b></td>
    <td class="thesis"><b>Thesis:</b> ${esc((r.intent||{}).thesis||'-')}<br><br>
      <b>Invalidation:</b> ${esc((r.intent||{}).invalidation||'-')}</td>
-   <td>${v?`<details><summary>${checks.length}/${G.length} recorded · ${passed} pass · ${failed} fail</summary>
+   <td class="gate-audit">${v?`<details><summary>${checks.length}/${G.length} recorded · ${passed} pass · ${failed} fail</summary>
      <ul class="checks">${ordered}</ul></details>`:'Not scored'}</td>`;
   tb.appendChild(tr);
 });
@@ -1238,7 +1239,7 @@ revisions of the same opportunity from masquerading as five independent vetoes.<
 <section>
 <div class="crit"><span class="n">04</span><h2>Presentation &amp; Execution</h2>
 <span class="why">Executions plus recent decision evidence</span></div>
-<div class="scroll"><table><thead><tr>
+<div class="scroll full"><table><thead><tr>
 <th>#</th><th>Verdict</th><th>Trade</th><th class="num">Credit</th><th class="num">Max loss</th>
 <th class="num">Breakeven WR</th><th class="num">Implied WR</th><th class="num">Edge</th>
 <th class="num">Friction</th><th class="num">EV net</th><th>AI rationale</th><th>Gate audit</th>
