@@ -356,7 +356,8 @@ def funnel_svg(stats: dict) -> str:
         ("Raw AI attempts", stats.get("raw_attempts", 0), "raw model calls"),
         ("Decision windows", stats.get("decision_windows", 0), "retries collapsed"),
         ("Trade-ready windows", stats.get("approved_windows", 0), "gate approved"),
-        ("Orders submitted", stats.get("submitted_windows", 0), "reached the broker"),
+        ("Spread orders submitted", stats.get("submitted_windows", 0),
+         "opening orders that reached the broker"),
     ]
     top = max((v for _, v, _ in steps), default=0) or 1
     rows = []
@@ -1056,10 +1057,15 @@ independently validated policy is allowed to touch the broker. Gate {summary.get
 <div class="note"><b>Authority boundary.</b> AI decides <em>what idea to investigate and why</em>.
 It never chooses an OCC symbol, trusts a price, calculates quantity, or sends an order.
 Alpaca data plus versioned policy decide the exact contract, whether it may trade, and how it exits.</div>
-<h2 style="font-size:14px;margin:26px 0 6px">Proposes freely, trades only what survives</h2>
+<h2 style="font-size:14px;margin:26px 0 6px">Proposes freely, trades only what survives
+<span style="font-weight:400;color:var(--muted)">&middot; credit-spread lane</span></h2>
 <p class="sub" style="margin-bottom:2px"><b>Signal, not retry noise.</b> {presentation['raw_attempts']:,} raw model
 attempts collapse into {presentation['decision_windows']:,} decision windows. The funnel shows how
-many survive each stage to reach the broker. The full per-decision thesis, economics, and gate
+many survive each stage to reach the broker. <b>These four bars count the credit-spread lane only</b>,
+which is where the LLM originates a trade: the long-call lane has its own scan and is reported under
+<b>Second options strategy</b> below. "Orders submitted" is opening orders, so it will not match the
+account's fill count above - every position is also closed, and a spread opens and closes two legs.
+The full per-decision thesis, economics, and gate
 audit live in the <b>Presentation &amp; Execution</b> table below and in
 <a href="{html_lib.escape(audit_href)}"><code>{html_lib.escape(audit_rel)}</code></a>.</p>
 {funnel_chart}
