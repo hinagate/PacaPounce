@@ -357,6 +357,17 @@ def overview_time(value: object) -> str:
         return str(value or "-")[:19]
 
 
+def event_timestamp(value: object) -> float:
+    """Sort broker UTC fills and local ET policy events on the same clock."""
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo("UTC"))
+        return parsed.timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return float("-inf")
+
+
 def funnel_svg(stats: dict) -> str:
     """AI-proposes / policy-disposes as one shrinking-bar funnel (inline SVG)."""
     steps = [
@@ -571,6 +582,119 @@ EXIT_LABELS = {
 }
 
 
+def mean_reversion_evidence(
+    mr_log: list[dict], mr_state: dict, pl: dict, recent_windows: int = 3,
+) -> list[dict]:
+    """Keep every submitted MR entry and broker-matched close, plus recent scans.
+
+    Policy records explain WHY, but only broker FIFO matches supply execution
+    prices, closed quantity, timestamps and realized P&L. A local CLOSED record
+    or submitted limit alone is not proof of a fill. Round trips aggregate
+    closed quantity per symbol; the explanation is the latest recorded exit.
+    """
+    decisions = [row for row in mr_log if row.get("kind") == "decision"]
+    recent = max(0, recent_windows)
+    selected = [
+        row for index, row in enumerate(decisions)
+        if row.get("status") == "SUBMITTED" or index >= len(decisions) - recent
+    ]
+    evidence = []
+    for row in selected:
+        candidate = row.get("candidate") or {}
+        contract = row.get("contract") or {}
+        checks = row.get("checks") or []
+        passed = sum(bool(check.get("passed")) for check in checks)
+        status = str(row.get("status") or "UNKNOWN").upper()
+        evidence.append({
+            "ts": row.get("ts"),
+            "label": (
+                f"{candidate.get('symbol')} long call · {contract.get('symbol', '-')} "
+                f"· RSI(2) {float(candidate.get('rsi2') or 0):.2f} "
+                f"· {contract.get('dte', '-')} DTE"
+                if candidate else "NDX30 options mean-reversion scan"
+            ),
+            "status": status,
+            "rationale": (
+                str((row.get("ai_review") or {}).get("thesis") or "").strip()
+                or str(row.get("reason") or "deterministic scan completed")
+            ),
+            "evidence": f"{passed}/{len(checks)} · MR entry policy",
+        })
+
+    if not pl.get("error"):
+        positions = mr_state.get("positions") or {}
+        latest_closes = {}
+        for row in sorted(mr_log, key=lambda item: event_timestamp(item.get("ts"))):
+            if row.get("kind") == "position_closed" and row.get("contract_symbol"):
+                latest_closes[row["contract_symbol"]] = row
+        broker_positions = pl.get("positions")
+        held = {
+            row.get("symbol") for row in (broker_positions or [])
+            if isinstance(row, dict)
+        }
+        seen = set()
+        for trip in pl.get("closed_round_trips") or []:
+            symbol = str(trip.get("symbol") or "")
+            record = positions.get(symbol) or {}
+            event = latest_closes.get(symbol) or {}
+            if trip.get("side") != "long" or not (record or event):
+                continue
+            key = (symbol, trip.get("closed_ts"))
+            if key in seen:
+                continue
+            seen.add(key)
+            # Do not attach a later re-entry's policy to an earlier close.
+            if event_timestamp(record.get("opened_at")) > event_timestamp(trip.get("closed_ts")):
+                record = {}
+                event = {}
+            action = event.get("reason") or record.get("exit_reason")
+            reason = EXIT_LABELS.get(str(action), str(action or "Exit reason not recorded"))
+            qty = float(trip.get("qty") or 0)
+            rationale = (
+                f"Latest recorded exit: {reason}. Broker-matched closed quantity {qty:g}; "
+                f"average entry {money(trip.get('avg_entry'))} → "
+                f"average exit {money(trip.get('avg_exit'))}; "
+                f"realized gross P&L {money(trip.get('realized'))} before fees."
+            )
+            ratchet = record.get("ratchet") or {}
+            high = event.get("ratchet_high_water_pnl", ratchet.get("high_water_pnl"))
+            floor = event.get("ratchet_floor_pnl", ratchet.get("floor_pnl"))
+            breaches = event.get("ratchet_breaches", ratchet.get("breaches"))
+            if action == "profit_ratchet" and high is not None and floor is not None:
+                rationale += (
+                    f" Ratchet high-water {money(high)}; trailing floor {money(floor)}."
+                )
+                if breaches is not None:
+                    rationale += f" {breaches} confirmed below-floor observations."
+            status = (
+                "PARTIAL CLOSE" if symbol in held else
+                "CLOSED" if isinstance(broker_positions, list) else "CLOSE FILLED"
+            )
+            evidence.append({
+                "ts": trip.get("closed_ts"),
+                "label": f"{event.get('underlying') or record.get('underlying') or symbol[:-15]} "
+                         f"long call · {symbol}",
+                "status": status,
+                "rationale": rationale,
+                "evidence": "Broker FIFO fills · recorded MR exit policy",
+            })
+    return sorted(evidence, key=lambda row: event_timestamp(row.get("ts")), reverse=True)
+
+
+def decision_evidence_row(row: dict) -> str:
+    """One escaped row shared by the overview and the execution deep dive."""
+    esc = lambda value: html_lib.escape(str(value))
+    status = row["status"]
+    badge = "ok" if status in {"SUBMITTED", "CLOSED", "CLOSE FILLED", "PARTIAL CLOSE"} else "no"
+    return (
+        f"<tr><td>{esc(overview_time(row.get('ts')))} ET</td>"
+        f"<td>{esc(row['label'])}</td>"
+        f'<td><span class="badge {badge}">{esc(status)}</span></td>'
+        f'<td class="decision-why">{esc(row["rationale"])}</td>'
+        f"<td>{esc(row['evidence'])}</td></tr>"
+    )
+
+
 def exit_block(exit_evidence: dict | None) -> str:
     if not exit_evidence:
         return ('<div class="note"><b>Latest position lifecycle.</b> '
@@ -671,6 +795,10 @@ def build(live: bool = True, output: Path | None = None,
         and row.get("status") in {"entry_pending", "open", "exit_pending"}
     ]
     mr_latest = mr_decisions[-1] if mr_decisions else None
+    mr_evidence = mean_reversion_evidence(mr_log, mr_state, pl)
+    mr_evidence_html = "".join(decision_evidence_row(row) for row in mr_evidence)
+    if not mr_evidence_html:
+        mr_evidence_html = '<tr><td colspan="5">No long-call decision or matched close recorded.</td></tr>'
     built_at = datetime.now(ZoneInfo("America/New_York")).isoformat(timespec="seconds")
     try:
         audit_rel = config.VERDICT_LOG.relative_to(ROOT).as_posix()
@@ -804,11 +932,11 @@ def build(live: bool = True, output: Path | None = None,
     submitted_entries = [
         (number, row) for number, row in selected_entries
         if (row.get("execution") or {}).get("submitted")
-    ][:2]
+    ]
     for number, row in submitted_entries:
         overview_entries[number] = row
 
-    decision_rows_html = ""
+    overview_rows = []
     for number, row in sorted(overview_entries.items(), reverse=True):
         verdict = row.get("verdict") or {}
         checks = verdict.get("checks") or []
@@ -837,38 +965,20 @@ def build(live: bool = True, output: Path | None = None,
         gate_text = f"{passed}/{len(gates.GATE_CATALOG)}"
         if failed_labels:
             gate_text += f" · {', '.join(failed_labels)}"
-        decision_rows_html += (
+        overview_rows.append((event_timestamp(row.get("ts")), (
             f"<tr><td>{overview_time(row.get('ts'))} ET</td>"
             f"<td>{html_lib.escape(label(row))}</td>"
             f"<td><span class=\"badge {badge_class}\">{action}</span></td>"
             f"<td class=\"decision-why\">{html_lib.escape(rationale)}</td>"
             f"<td>{gate_text}</td></tr>"
-        )
-    for row in reversed(mr_decisions[-3:]):
-        candidate = row.get("candidate") or {}
-        checks = row.get("checks") or []
-        passed = sum(bool(check.get("passed")) for check in checks)
-        status = str(row.get("status") or "UNKNOWN").upper()
-        badge_class = "ok" if status == "SUBMITTED" else "no"
-        rationale = (
-            str((row.get("ai_review") or {}).get("thesis") or "").strip()
-            or str(row.get("reason") or "deterministic scan completed")
-        )
-        contract = row.get("contract") or {}
-        candidate_text = (
-            f"{candidate.get('symbol')} long call · RSI(2) "
-            f"{float(candidate.get('rsi2') or 0):.2f} · "
-            f"{contract.get('dte', '-')} DTE"
-            if candidate else "NDX30 options mean-reversion scan"
-        )
-        decision_rows_html = (
-            f"<tr><td>{overview_time(row.get('ts'))} ET</td>"
-            f"<td>{html_lib.escape(candidate_text)}</td>"
-            f"<td><span class=\"badge {badge_class}\">{html_lib.escape(status)}</span></td>"
-            f"<td class=\"decision-why\">{html_lib.escape(rationale)}</td>"
-            f"<td>{passed}/{len(checks)} · MR policy</td></tr>"
-            + decision_rows_html
-        )
+        )))
+    overview_rows.extend(
+        (event_timestamp(row.get("ts")), decision_evidence_row(row))
+        for row in mr_evidence
+    )
+    decision_rows_html = "".join(
+        row_html for _, row_html in sorted(overview_rows, key=lambda item: item[0], reverse=True)
+    )
     if not decision_rows_html:
         decision_rows_html = (
             '<tr><td colspan="5" style="color:var(--muted);font-weight:400">'
@@ -1071,8 +1181,8 @@ Nothing here is financial advice or evidence of future performance.</div>
 <tbody>{closed_rows_html}</tbody></table></div>
 {closed_note}
 
-<div class="overview-head"><div><h2>Decision log — what the agent did and why</h2>
-<p>Newest six bounded windows plus submitted decisions; retries are collapsed.</p></div>
+<div class="overview-head"><div><h2 id="decision-log">Decision log — what the agent did and why</h2>
+<p>Recent scans, submitted entries from both lanes, and broker-matched long-call closes; newest first.</p></div>
 <p>{presentation['approved_windows']} approved · {presentation['blocked_windows']} blocked</p></div>
 <div class="simple-table"><table><thead><tr><th>Time</th><th>Candidate</th><th>Decision</th>
 <th>Rationale</th><th>Gates</th></tr></thead><tbody>{decision_rows_html}</tbody></table></div>
@@ -1311,15 +1421,24 @@ revisions of the same opportunity from masquerading as five independent vetoes.<
 <div class="tiles" id="vr"></div>
 </section>
 
-<section>
+<section id="presentation-execution">
 <div class="crit"><span class="n">04</span><h2>Presentation &amp; Execution</h2>
 <span class="why">Executions plus recent decision evidence</span></div>
+<h3 style="font-size:14px;margin:0 0 8px">Long-call decisions and broker-matched exits</h3>
+<div class="simple-table"><table><thead><tr>
+<th>Time (ET)</th><th>Trade</th><th>Decision / execution</th><th>Reason and realized result</th><th>Evidence</th>
+</tr></thead><tbody id="mr-execution-rows">{mr_evidence_html}</tbody></table></div>
+<div class="note">Every submitted long-call entry and broker-matched closed position is retained,
+plus the latest three scans. Exit prices, time, closed quantity and gross P&amp;L come from
+FIFO-matched broker fills, not submitted limits or local marks. Closed quantity is aggregated
+per contract symbol; the policy explanation describes its latest recorded exit.</div>
+<h3 style="font-size:14px;margin:24px 0 8px">Credit-spread gate decisions</h3>
 <div class="scroll full"><table><thead><tr>
 <th>#</th><th>Verdict</th><th>Trade</th><th class="num">Credit</th><th class="num">Max loss</th>
 <th class="num">Breakeven WR</th><th class="num">Implied WR</th><th class="num">Edge</th>
 <th class="num">Friction</th><th class="num">EV net</th><th>AI rationale</th><th>Gate audit</th>
 </tr></thead><tbody id="tb"></tbody></table></div>
-<div class="note"><b>Presentation is bounded; audit is complete.</b> Showing
+<div class="note"><b>Credit-spread presentation is bounded; audit is complete.</b> Showing
 {presentation['shown_rows']} of {presentation['raw_attempts']} raw rows: <b>every</b> approved or
 submitted result, plus the newest {presentation['recent_window_limit']} decision windows at one
 row each. Selection is by recency, not by sampling, so approvals are over-represented in this

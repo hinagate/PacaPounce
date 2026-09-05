@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts import build_dashboard  # noqa: E402
@@ -258,3 +260,124 @@ def test_presentation_collapses_retries_and_keeps_approved_results():
     )
     assert [number for number, _ in approved_only] == [2]
     assert zero_stats["shown_rows"] == 1
+
+
+@pytest.fixture
+def mr_close_evidence():
+    symbol = "AMD260925C00415000"
+    entry = {
+        "kind": "decision", "status": "SUBMITTED",
+        "ts": "2026-09-02T10:01:05-04:00",
+        "candidate": {"symbol": "AMD", "rsi2": 11.06},
+        "contract": {"symbol": symbol, "dte": 23},
+        "ai_review": {"thesis": "Oversold AMD entry thesis"},
+        "checks": [{"name": "carry_within_signal_edge", "passed": True}],
+    }
+    close = {
+        "kind": "position_closed", "ts": "2026-09-04T14:28:00Z",
+        "contract_symbol": symbol, "underlying": "AMD", "reason": "profit_ratchet",
+        "exit_client_order_id": "amd-close", "qty": 4,
+        # These submitted/local values must not masquerade as actual fills.
+        "exit_limit": 55.6, "exit_trigger_pnl": 3500.0,
+        "ratchet_high_water_pnl": 5400.0, "ratchet_floor_pnl": 4050.0,
+        "ratchet_breaches": 2,
+    }
+    scans = [{
+        "kind": "decision", "ts": f"2026-09-04T{hour}:45:00-04:00",
+        "status": "NO_SIGNAL", "reason": "no_qualified_mean_reversion",
+    } for hour in (12, 13, 14, 15)]
+    state = {"positions": {symbol: {
+        "status": "closed", "underlying": "AMD",
+        "opened_at": "2026-09-02T10:01:29-04:00",
+        "exit_reason": "profit_ratchet",
+    }}}
+    pl = {
+        "error": None, "positions": [], "open_positions": 0,
+        "closed_round_trips": [{
+            "symbol": symbol, "side": "long", "qty": 4,
+            "avg_entry": 46.85, "avg_exit": 55.7, "realized": 3540.0,
+            "opened_ts": "2026-09-02T14:00:59Z",
+            "closed_ts": "2026-09-04T14:27:34Z",
+        }],
+    }
+    # Duplicate lifecycle notifications must not duplicate broker P&L.
+    return [entry, close, dict(close), *scans], state, pl
+
+
+def test_mr_presentation_keeps_old_entry_and_broker_close(mr_close_evidence):
+    log, state, pl = mr_close_evidence
+    rows = build_dashboard.mean_reversion_evidence(log, state, pl)
+
+    assert len(rows) == 5  # All submissions/closes plus only three recent scans.
+    assert [row["status"] for row in rows] == [
+        "NO_SIGNAL", "NO_SIGNAL", "NO_SIGNAL", "CLOSED", "SUBMITTED",
+    ]
+    close = rows[3]
+    assert close["ts"] == "2026-09-04T14:27:34Z"
+    assert "AMD260925C00415000" in close["label"]
+    for expected in ("$46.85", "$55.70", "$3,540.00", "$5,400.00", "$4,050.00"):
+        assert expected in close["rationale"]
+    assert "$55.60" not in close["rationale"]
+    assert "$3,500.00" not in close["rationale"]
+    assert "2 confirmed below-floor observations" in close["rationale"]
+    assert "Oversold AMD entry thesis" in rows[-1]["rationale"]
+
+
+@pytest.mark.parametrize("unverified", ["missing_fills", "broker_error"])
+def test_mr_close_needs_broker_fill_evidence(mr_close_evidence, unverified):
+    log, state, pl = mr_close_evidence
+    if unverified == "missing_fills":
+        pl["closed_round_trips"] = []
+    else:
+        pl["error"] = "account identity mismatch"
+    rows = build_dashboard.mean_reversion_evidence(log, state, pl)
+    assert all(row["status"] not in {"CLOSED", "CLOSE FILLED"} for row in rows)
+    assert all("$3,540.00" not in row["rationale"] for row in rows)
+
+
+def test_mr_partial_close_does_not_claim_flat(mr_close_evidence):
+    log, state, pl = mr_close_evidence
+    pl["positions"] = [{"symbol": "AMD260925C00415000", "qty": 1}]
+    rows = build_dashboard.mean_reversion_evidence(log, state, pl)
+    assert any(row["status"] == "PARTIAL CLOSE" for row in rows)
+    assert not any(row["status"] == "CLOSED" for row in rows)
+
+
+def test_decision_evidence_escapes_policy_text():
+    rendered = build_dashboard.decision_evidence_row({
+        "ts": "2026-09-04T14:27:34Z", "status": "CLOSED",
+        "label": 'AMD <script>alert("label")</script>',
+        "rationale": '<script>alert("reason")</script>',
+        "evidence": "Broker <fills>",
+    })
+    assert "<script>" not in rendered
+    assert "&lt;script&gt;" in rendered
+    assert "Sep 04 10:27:34" in rendered
+
+
+def test_both_dashboard_sections_include_amd_close(tmp_path, monkeypatch, mr_close_evidence):
+    log, state, pl = mr_close_evidence
+    monkeypatch.setattr(build_dashboard.config, "ALPACA_ACCOUNT_ID", "EXPECTED")
+    pl["account_number"] = "EXPECTED"
+    monkeypatch.setattr(build_dashboard, "load_pnl", lambda _live: pl)
+    monkeypatch.setattr(build_dashboard, "load_exit_evidence", lambda *_args: None)
+    monkeypatch.setattr(build_dashboard, "load_tools", lambda: {})
+    monkeypatch.setattr(build_dashboard, "load_validation", lambda: {})
+    monkeypatch.setattr(build_dashboard.ledger, "load", lambda: [])
+    monkeypatch.setattr(build_dashboard.mean_reversion, "load_log", lambda: log)
+    monkeypatch.setattr(build_dashboard.mean_reversion, "load_state", lambda: state)
+    html = build_dashboard.build(
+        live=True, output=tmp_path / "index.html", published=True,
+    ).read_text(encoding="utf-8")
+
+    overview = html.split('id="decision-log"', 1)[1].split("Second options strategy", 1)[0]
+    execution = html.split('id="presentation-execution"', 1)[1].split("</section>", 1)[0]
+    for section in (overview, execution):
+        assert "AMD260925C00415000" in section
+        assert "CLOSED" in section
+        assert "SUBMITTED" in section
+        assert "Profit high-water ratchet" in section
+        assert "$55.70" in section
+        assert "$3,540.00" in section
+        assert section.index("Sep 04 15:45:00") < section.index("Sep 04 10:27:34")
+    assert "http-equiv=\"refresh\"" not in html
