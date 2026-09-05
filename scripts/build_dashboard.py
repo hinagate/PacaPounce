@@ -934,6 +934,21 @@ account&#39;s P&amp;L.</div>"""
     spread_lane_budget = sizing.spread_budget(
         pl.get('options_buying_power') or 0.0, pl.get('equity') or 0.0,
         config.SPREAD_EQUITY_PCT)
+    # Realized P&L by origin. Uses the same FIFO matches as the headline
+    # figure, so the three rows always sum to it.
+    _adopted = {
+        sym for sym, row in (mr_state.get("positions") or {}).items()
+        if isinstance(row, dict) and row.get("adopted")
+    }
+    _src = {"spread": 0.0, "own": 0.0, "adopted": 0.0}
+    for _t in pl.get("closed_round_trips") or []:
+        _sym = str(_t.get("symbol") or "")
+        _key = ("spread" if _sym.startswith(("SPY", "QQQ"))
+                else ("adopted" if _sym in _adopted else "own"))
+        _src[_key] += _t.get("realized") or 0.0
+    source_split = {k: round(v, 2) for k, v in _src.items()}
+    source_split["total"] = round(sum(_src.values()), 2)
+
     funnel_chart = funnel_svg(presentation)
 
     # Predicted gate EV vs. what the account actually realized.
@@ -1148,6 +1163,14 @@ next to what the account actually realized. A gate that forecasts well keeps the
 {ev_chart if ev_chart else '<div class="note">Predicted-vs-actual populates once the live account has approved fills.</div>'}
 {pnl_block}
 {lifecycle_block}
+<div class="note"><b>Where the realized P&amp;L came from.</b>
+Credit-spread lane {money(source_split['spread'])} &middot;
+long-call lane, the agent&#39;s own entries {money(source_split['own'])} &middot;
+{money(source_split['adopted'])} from four positions a test suite placed on this account by
+mistake on 1 September, which the monitor adopted so its stop and ratchet governed them, and
+later closed. Total {money(source_split['total'])}. The agent chose and managed every position
+except those four, and managed those too. The mistake and its fix are in the repository
+history; the adoption note is on each position in the published decision log.</div>
 <div class="note warn"><b>Tournament risk disclosure.</b> The configured
 <code>{config.SIZING_MODE}</code> objective sizes each lane from its own share of equity
 rather than from a prudent risk budget. The credit-spread lane may carry
