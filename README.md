@@ -62,17 +62,17 @@ and a lane's allocation never depends on which lane filled first.
 
 ```mermaid
 flowchart TD
-    EQ["Account equity · $100,000 paper<br/>split by policy, not by whoever fills first"]
-    EQ --> SL["SPREAD LANE · 10% of equity as defined loss"]
-    EQ --> LL["LONG-CALL LANE · up to 70% of equity in premium"]
+    EQ["Account equity<br/>$100,000 paper<br/>split by policy, not by<br/>whoever fills first"]
+    EQ --> SL["SPREAD LANE<br/>10% of equity<br/>as defined loss"]
+    EQ --> LL["LONG-CALL LANE<br/>up to 70% of equity<br/>in premium"]
 
-    SL --> SU["Universe · SPY + QQQ<br/>the deepest option markets there are"]
-    SU --> ST["Sell a defined-risk credit spread<br/>credit collected up front, maximum loss capped"]
+    SL --> SU["Universe<br/>SPY + QQQ<br/>the deepest option<br/>markets there are"]
+    SU --> ST["Sell a defined-risk<br/>credit spread<br/>credit up front,<br/>maximum loss capped"]
 
-    LL --> LU["Universe · 12 liquid Nasdaq names<br/>oversold inside a long-term uptrend"]
-    LU --> LT["Buy one 14-30 DTE call near 0.70 delta<br/>premium paid is the maximum loss"]
+    LL --> LU["Universe<br/>12 liquid Nasdaq names<br/>oversold inside a<br/>long-term uptrend"]
+    LU --> LT["Buy one 14-30 DTE call<br/>near 0.70 delta<br/>premium paid is<br/>the maximum loss"]
 
-    ST --> MON["One 30-second monitor, both lanes<br/>Options only, never stock · deterministic exits · the LLM has no vote"]
+    ST --> MON["One 30-second monitor,<br/>both lanes<br/>Options only, never stock<br/>Deterministic exits<br/>The LLM has no vote"]
     LT --> MON
 
     classDef eq fill:#fdf0e2,stroke:#c2751a,color:#12202e;
@@ -93,36 +93,36 @@ that reaches the broker is resolved by deterministic code afterwards.
 
 ```mermaid
 flowchart TD
-    OBS["Alpaca MCP observation brief · cached 5 min<br/>spot · completed daily bars · 1D and 5D returns<br/>RV20 · nearest-ATM IV · IV/RV · quote timestamps<br/>missing fields stay missing, never imputed"]
+    OBS["Alpaca MCP brief<br/>cached 5 minutes<br/>spot · completed bars<br/>1D and 5D returns<br/>RV20 · nearest-ATM IV<br/>IV/RV · quote timestamps<br/>missing stays missing"]
 
     subgraph LA["Lane A · credit spread — the LLM PROPOSES"]
         direction TB
-        A1["LLM · gemini-3.7-flash"]
-        A2["Intent JSON only:<br/>direction · structure · delta target · DTE band<br/>never a strike, never a size, never an exit"]
+        A1["LLM<br/>gemini-3.7-flash"]
+        A2["Intent JSON only<br/>direction · structure<br/>delta target · DTE band<br/>never a strike<br/>never a size<br/>never an exit"]
         A1 --> A2
     end
 
     subgraph LB["Lane B · long call — the LLM REVIEWS"]
         direction TB
-        B1["Deterministic scan ranks the universe<br/>SMA200 rising · Wilder RSI-2 oversold · ATR"]
-        B2["LLM sees the top candidate plus<br/>timestamped Alpaca get_news output"]
-        B3["May veto a concrete event risk<br/>and writes the thesis — it cannot approve"]
+        B1["Deterministic scan<br/>ranks the universe<br/>SMA200 rising<br/>Wilder RSI-2 oversold<br/>ATR"]
+        B2["LLM sees the top<br/>candidate plus timestamped<br/>Alpaca get_news output"]
+        B3["May veto a concrete<br/>event risk and write<br/>the thesis<br/>It cannot approve"]
         B1 --> B2 --> B3
     end
 
     OBS --> A1
     OBS --> B1
 
-    A2 --> COH{"Coherence check<br/>can ANY strike pair satisfy this delta target<br/>AND this max-loss cap?"}
-    COH -->|no| REJ["Rejected — free, before any chain lookup"]
+    A2 --> COH{"Coherence check<br/>can ANY strike pair<br/>satisfy this delta target<br/>AND this max-loss cap?"}
+    COH -->|no| REJ["Rejected — free,<br/>before any chain lookup"]
     COH -->|yes| BLD
     B3 --> BLD
 
-    BLD["Contract builder · resolves intent against the LIVE chain<br/>real strikes · real bid/ask · real Greeks"]
-    BLD --> GATES["Deterministic gate stack — see section 2"]
+    BLD["Contract builder<br/>resolves intent against<br/>the LIVE chain<br/>real strikes<br/>real bid/ask · real Greeks"]
+    BLD --> GATES["Deterministic gate stack<br/>see section 2"]
     GATES -->|fail| REJ
-    GATES -->|pass| EXEC["Executor · atomic multi-leg limit order · paper only"]
-    EXEC --> LED["Append-only verdict ledger<br/>every proposal, approved and rejected, stamped with the gate version"]
+    GATES -->|pass| EXEC["Executor<br/>atomic multi-leg<br/>limit order · paper only"]
+    EXEC --> LED["Append-only verdict ledger<br/>every proposal, approved<br/>and rejected, stamped<br/>with the gate version"]
     REJ --> LED
 
     classDef ai fill:#f3e8fd,stroke:#7e22ce,color:#12202e;
@@ -160,39 +160,39 @@ of this project is the **last** one: operational safety says a trade is
 
 ```mermaid
 flowchart TD
-    IN["Resolved contract · real chain prices"]
+    IN["Resolved contract<br/>real chain prices"]
 
     subgraph OPS["15 operational gates · all must pass"]
         direction TB
-        O1["Structure · defined_risk"]
-        O2["Policy · allowlist"]
-        O3["Broker · alpaca_options_eligible"]
-        O4["Sizing · position_size"]
-        O5["Portfolio · open_positions · daily_trade_limit · no_duplicate"]
-        O6["Objective · annual_target_budget"]
-        O7["Market data · quote_freshness · liquidity"]
-        O8["Risk · max_loss_cap · total_risk_cap"]
-        O9["Execution · limit_order_only"]
-        O10["Economics · call_rebound_risk"]
-        O11["Lifecycle · reentry_quality"]
+        O1["Structure<br/>defined_risk"]
+        O2["Policy<br/>allowlist"]
+        O3["Broker<br/>alpaca_options_eligible"]
+        O4["Sizing<br/>position_size"]
+        O5["Portfolio<br/>open_positions<br/>daily_trade_limit<br/>no_duplicate"]
+        O6["Objective<br/>annual_target_budget"]
+        O7["Market data<br/>quote_freshness<br/>liquidity"]
+        O8["Risk<br/>max_loss_cap<br/>total_risk_cap"]
+        O9["Execution<br/>limit_order_only"]
+        O10["Economics<br/>call_rebound_risk"]
+        O11["Lifecycle<br/>reentry_quality"]
         O1 --> O2 --> O3 --> O4 --> O5 --> O6 --> O7 --> O8 --> O9 --> O10 --> O11
     end
 
     IN --> O1
-    O11 --> EG{"ECONOMIC GATE · economic_ev<br/>tail SHAPE from per-strike implied vols<br/>vol LEVEL as EWMA realised over ATM implied<br/>drift stated as an 8%/yr assumption<br/>friction measured from real bid/ask, not mid"}
+    O11 --> EG{"ECONOMIC GATE<br/>economic_ev<br/>tail SHAPE from<br/>per-strike implied vols<br/>vol LEVEL as EWMA realised<br/>over ATM implied<br/>drift stated as an<br/>8%/yr assumption<br/>friction from real bid/ask,<br/>never mid"}
 
-    EG -->|"EV not positive"| REJ["Rejected · logged in full to the audit"]
-    EG -->|"EV positive, net of friction"| EXEC["Executor · paper only"]
+    EG -->|"EV not positive"| REJ["Rejected<br/>logged in full<br/>to the audit"]
+    EG -->|"EV positive"| EXEC["Executor<br/>paper only"]
 
     EXEC --> POST
 
     subgraph POST["Post-entry controls · 30-second monitor, no LLM vote"]
         direction TB
-        P1["2x ATR14 underlying stop"]
-        P2["Profit ratchet · floor trailed on the executable bid<br/>an armed floor is always above breakeven"]
-        P3["hold_ev_negative · a held spread is re-priced<br/>by the entry EV model every 5 minutes"]
-        P4["budget_resize · issuer_concentration · holding-session limit"]
-        P5["An unfilled close is re-limited at the fresh bid,<br/>then escalated to market"]
+        P1["2x ATR14<br/>underlying stop"]
+        P2["Profit ratchet<br/>floor trailed on<br/>the executable bid<br/>an armed floor is<br/>always above breakeven"]
+        P3["hold_ev_negative<br/>a held spread is re-priced<br/>by the entry EV model<br/>every 5 minutes"]
+        P4["budget_resize<br/>issuer_concentration<br/>holding-session limit"]
+        P5["An unfilled close is<br/>re-limited at the fresh bid,<br/>then escalated to market"]
     end
 
     classDef ops fill:#e6effd,stroke:#1a56db,color:#12202e;
@@ -222,22 +222,22 @@ than proceeding on stale data.
 
 ```mermaid
 flowchart TD
-    RUN["run.py · single process<br/>--check / --propose / --trade / --measure / --loop"]
-    RUN --> MCP["Official Alpaca MCP server<br/>alpaca-mcp-server · stdio transport · 72 tools<br/>the only path to the broker"]
+    RUN["run.py · one process<br/>--check / --propose<br/>--trade / --measure<br/>--loop"]
+    RUN --> MCP["Official Alpaca MCP server<br/>alpaca-mcp-server<br/>stdio transport · 72 tools<br/>the only path to the broker"]
 
-    MCP --> T1["Session lifecycle<br/>get_clock · get_calendar · get_orders<br/>sleeps to next_open, rolls across sessions,<br/>reconciles pending locks after a restart"]
-    MCP --> T2["Market data<br/>get_stock_latest_quote · get_stock_bars<br/>get_option_chain · get_option_snapshot · get_news"]
-    MCP --> T3["Account state<br/>get_account_info · get_all_positions<br/>get_account_activities with activity_types FILL"]
-    MCP --> T4["Execution<br/>place_option_order with order_class mleg<br/>a negative limit_price means a credit"]
+    MCP --> T1["Session lifecycle<br/>get_clock · get_calendar<br/>get_orders<br/>sleeps to next_open<br/>rolls across sessions<br/>reconciles pending locks<br/>after a restart"]
+    MCP --> T2["Market data<br/>get_stock_latest_quote<br/>get_stock_bars<br/>get_option_chain<br/>get_option_snapshot<br/>get_news"]
+    MCP --> T3["Account state<br/>get_account_info<br/>get_all_positions<br/>get_account_activities<br/>activity_types FILL"]
+    MCP --> T4["Execution<br/>place_option_order<br/>order_class mleg<br/>a negative limit_price<br/>means a credit"]
 
-    T3 --> AUTH{"Authorization snapshot — a trade input, not a statistic<br/>status ACTIVE · no broker or user trading block<br/>options approved and trading level 3 or higher<br/>positive options buying power"}
-    AUTH -->|"any field missing or failing"| STOP["Fail closed · no LLM call, no order"]
+    T3 --> AUTH{"Authorization snapshot<br/>a trade input,<br/>not a statistic<br/>status ACTIVE<br/>no broker or user block<br/>options level 3 or higher<br/>positive options<br/>buying power"}
+    AUTH -->|"any field fails"| STOP["Fail closed<br/>no LLM call<br/>no order"]
     AUTH -->|"all fields pass"| T4
 
     T1 --> CONF
-    T4 --> CONF["get_orders must confirm the client ID and the<br/>Alpaca broker order ID before SUBMITTED is recorded"]
+    T4 --> CONF["get_orders must confirm<br/>the client ID and the<br/>Alpaca broker order ID<br/>before SUBMITTED<br/>is recorded"]
 
-    CONF --> SAFE["Paper-only pins<br/>ALPACA_PAPER_TRADE=true fixed in veto/mcp_client.py<br/>trading base URL hard-coded to paper-api<br/>the dashboard renders nothing unless the live<br/>account number equals PA3ZX2FIASSZ"]
+    CONF --> SAFE["Paper-only pins<br/>ALPACA_PAPER_TRADE=true<br/>fixed in veto/mcp_client.py<br/>base URL hard-coded<br/>to paper-api<br/>the dashboard shows nothing<br/>unless the account number<br/>equals PA3ZX2FIASSZ"]
 
     classDef infra fill:#e6effd,stroke:#1a56db,color:#12202e;
     classDef guard fill:#fdf0e2,stroke:#c2751a,color:#12202e;
