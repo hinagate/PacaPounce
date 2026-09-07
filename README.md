@@ -481,17 +481,14 @@ about $10,000 of defined maximum loss on the $100,000 account. The result record
 source buying power, the lane budget, quantity, total defined loss, and
 utilization percentage.
 
-This is tournament sizing, not a prudent production allocation — see
-[Tournament mode](#tournament-mode-a-different-objective-stated-as-one) for why
-the remaining capital goes to the convex lane instead of to a bigger spread. Set
-`PACAPOUNCE_SPREAD_EQUITY_PCT=0.95` or `PACAPOUNCE_SIZING_MODE=kelly` to run the
-expected-value configuration instead.
-
 This is tournament sizing, not a prudent production allocation. It maximizes
 scored exposure only after all deterministic gates survive, but a single
-maximum-loss outcome can still consume almost the entire paper account. Use
-fractional utilization or `PACAPOUNCE_SIZING_MODE=kelly` for any other purpose. The
-dashboard discloses the active 100% allocation and its downside explicitly.
+maximum-loss outcome can still consume almost the entire paper account, and
+the dashboard discloses that downside explicitly. See
+[Tournament mode](#tournament-mode-a-different-objective-stated-as-one) for why
+the remaining capital goes to the convex lane instead of into a bigger spread.
+Set `PACAPOUNCE_SPREAD_EQUITY_PCT=0.95` or `PACAPOUNCE_SIZING_MODE=kelly` to
+run the expected-value configuration instead.
 
 Every sized position reports its full outcome distribution, not just its mean. A
 point estimate is close to useless when the spread of outcomes dwarfs it.
@@ -638,55 +635,15 @@ dishonest label.
 
 ## Architecture
 
-```
-  MCP session supervisor ..... clock + calendar + orders + positions + account
-        |                       sleeps to MCP next_open; rolls across sessions;
-        v                       pending locks, entries, Level 3+ eligibility,
-                                blocks, and live options buying power
-  MCP regime brief .......... live spot + completed daily bars + nearest ATM IV
-        |                       1D/5D returns, RV20, IV/RV, quote timestamp;
-        v                       cached 5 minutes, missing fields stay missing
-  LLM (gemini-3.7-flash)
-        |  intent JSON — never an order, never a strike
-        v
-  Coherence check ............ can any strike pair satisfy this
-        |                       delta target AND this max-loss cap?
-        v                       Rejected free, before any chain lookup.
-  Contract builder ........... resolves intent against the LIVE chain
-        |                       via Alpaca MCP. Real strikes, real
-        v                       bid/ask, real Greeks.
-  Operational gates .......... 15 controls: defined risk, Alpaca eligibility,
-        |                       options-BP collateral, allowlist, size,
-        |                       duplicates, freshness, liquidity and limits
-        v
-  ECONOMIC GATE .............. market-implied EV, net of measured friction
-        |
-        v
-  Executor ................... atomic multi-leg limit order, paper only
-        |                       negative limit_price = credit
-        v
-  Verdict ledger ............. every proposal, approved and rejected,
-                               append-only, stamped with the gate version
+The LLM never names a strike; it emits intent, and deterministic code resolves
+that intent against the live chain. Its compact prompt is grounded in
+timestamped Alpaca MCP observations: current spot, completed-bar returns,
+realized volatility, nearest-ATM implied volatility, and IV/RV. Alpaca MCP does
+not expose a direct VIX or historical IV-rank series here, so neither is
+invented nor presented to the model.
 
-  options MR lane (10:00,15:45)  SIP D1 + completed 15m bars -> SMA/RSI/ATR/EMA
-        |                       one top underlying; options capital must be clear
-        v
-  Alpaca news + LLM review .... event-risk veto/thesis only; no fake earnings claim
-        |
-        v
-  Long-call builder ........... live chain -> 14–30 DTE / ~0.70 delta / limit order
-        |
-        v
-  Options monitor ............. ATR stop -> EMA5/3-session deterministic close
-```
-
-The LLM never names a strike. It emits intent; deterministic code resolves it.
-That removes hallucinated OCC symbols, impossible strikes and malformed legs as a
-category, and it makes proposals comparable to each other. Its compact prompt is
-grounded in timestamped Alpaca MCP observations: current spot, completed-bar
-returns, realized volatility, nearest-ATM implied volatility, and IV/RV. Alpaca
-MCP does not expose a direct VIX or historical IV-rank series here, so neither is
-invented or presented to the model.
+The full pipeline, both lanes, and the gate stack are drawn in
+[How it works](#how-it-works-ai-logic-risk-gates-alpaca-infrastructure).
 
 ## Alpaca integration
 
@@ -704,17 +661,6 @@ Everything reaching Alpaca goes through the **official Alpaca MCP server**
 | Multi-leg execution | `place_option_order` (`order_class="mleg"`) |
 | Options-MR signal + event context | `get_stock_bars`, `get_news` |
 | Long-call discovery + execution | `get_option_chain`, `get_option_latest_quote`, `place_option_order`, `get_orders` |
-
-There is no direct Alpaca REST fallback in the runnable agent. An incomplete MCP
-snapshot fails closed. Paper account only — `ALPACA_PAPER_TRADE=true` is pinned
-in `veto/mcp_client.py` and the trading base URL is hard-coded to `paper-api`.
-
-`get_account_info` is also a trade authorization input, not merely a dashboard
-statistic. Before LLM is called, and again immediately before order submission,
-the agent requires account status `ACTIVE`, no broker/user trading block,
-`options_approved_level >= 3`, `options_trading_level >= 3`, and positive
-`options_buying_power`. The full deterministic gate is rerun against that final
-MCP snapshot so stale eligibility or buying power cannot reach the executor.
 
 ## Rejection sampling is overfitting at execution time
 
@@ -761,108 +707,65 @@ PacaPounce loads only `PacaPounce/.env`; it never falls back to an `.env` in a
 parent directory. This prevents another project from silently changing the
 paper account, model, market-data feed, or risk policy.
 
-The monitor reconstructs credit spreads and the second strategy's long-call
-lifecycle from Alpaca's live option positions and polls every 30 seconds. It
-batches independent MCP requests and measures both midpoint and immediately
-executable P&L. The entry gate prices a spread on its terminal payoff, and on a
-$2-wide spread the 50% profit target and the trailing ratchet were closing the
-winners early while the losers ran to the breach — simulated on the live SPY
-770/772C the configured monitor was −$520 expected against +$587 for holding to
-expiry with the long-strike breach still armed. The shipped configuration therefore runs
-with `PACAPOUNCE_MONITOR_PROFIT_EXIT_ENABLED=false`: the spread is held to
-expiry and closed at market only if the underlying crosses the long strike, and
-the spread lane's share of equity is halved to 10% because the trail no longer
-trims its loss tail. With profit exits on, the monitor takes profit after 50% of
-the opening credit is captured and a restart-safe profit ratchet arms after 20%
-capture and closes after two confirmed observations give back 20% of the
-executable high water; high P&L volatility tightens that trail to 10% but never
-closes by itself, and a change dispersion inside 1.5 ticks per contract is quote
-flicker rather than volatility. The monitor also applies the repository's
-70%-of-max-loss guard on non-expiry days. Expiry-day stop-loss exits are
-suppressed; only late pin risk between the strikes forces a close. A standalone monitor requires `--execute`
-before it may mutate; the explicitly mutating `run.py --loop` command enables its
-bundled paper monitor. Both paths check the MCP environment and trade URL for
-paper mode at startup.
+## Operations
 
-For managed long calls, the same monitor checks the underlying against the 2×ATR
-stop throughout each regular session. At the daily decision window it uses
-completed SIP bars to test EMA5 recovery and the Alpaca calendar to count normal
-holding sessions. Every triggered exit is a sell-to-close option limit at the
-live bid, reconciled by client ID and Alpaca broker order ID.
+**The risk monitor** reconstructs credit spreads and the long-call lifecycle
+from Alpaca's live option positions, polls every 30 seconds, batches independent
+MCP requests, and measures both midpoint and immediately executable P&L. The
+shipped configuration sets `PACAPOUNCE_MONITOR_PROFIT_EXIT_ENABLED=false`: the
+spread is held to expiry and closed at market only if the underlying crosses the
+long strike. On a $2-wide spread the 50% profit target and the trailing ratchet
+were closing winners early while losers ran to the breach — simulated on the
+live SPY 770/772C, the configured monitor was −$520 expected against +$587 for
+holding to expiry. The spread lane's equity share is halved to 10% because that
+trail no longer trims its loss tail. A 70%-of-max-loss guard applies on
+non-expiry days; expiry-day stop-loss exits are suppressed and only late pin
+risk between the strikes forces a close. A standalone monitor requires
+`--execute` before it may mutate anything.
 
-`run.py --loop` owns the full paper-session lifecycle. It waits for Alpaca to
-open, starts the deterministic monitor with paper auto-exits plus the live
-dashboard builder, supervises and restarts both processes if needed, and writes
-one final dashboard snapshot at each close. It then sleeps in bounded intervals
-using Alpaca MCP's `next_open`, including weekends and holidays, and starts both
-helpers again at the next session without restarting `run.py`. The static page
-reloads the atomically written snapshot every 60 seconds while the market is
-open. If the monitor cannot run, new
-entries fail closed. Reaching the daily trade cap locks
-new proposals but leaves risk monitoring active through the closing bell. In
-`full_buying_power` mode the 8%-annual figure remains visible as a benchmark but
-does not force a profit exit. Once its first full-capital spread is open, entry
-hunting enters a broker-backed wait state before LLM is called; the risk monitor
-continues through the closing bell. `Ctrl+C` cleanly stops both processes.
+For long calls the same monitor checks the underlying against the 2×ATR stop
+through each regular session, then uses completed SIP bars to test EMA5 recovery
+and the Alpaca calendar to count holding sessions. Every triggered exit is a
+sell-to-close limit at the live bid, reconciled by client ID and Alpaca broker
+order ID.
 
-The bundled entry loop is supervised by Alpaca MCP. Before any LLM request,
-it reads the broker clock and calendar, open and same-day orders, positions, and
-account. It pauses outside the regular session (including short sessions), sleeps
-toward MCP's next opening bell, blocks while an opening or closing order is
-pending, and counts
-filled parent PacaPounce entries from Alpaca instead of process memory. Alpaca FILL
-activities independently corroborate the child-leg executions, while the parent
-order remains the one logical trade. Structured client IDs
-(`veto-open-YYYYMMDD-<decision>-rN`) group order-chase revisions as one
-logical trade. A restart therefore cannot reset the daily cap or forget a live
-order. The same preflight and all 16 ordered gates run again immediately before
-submission and fail closed if MCP is unavailable, the account loses options
-eligibility, or remaining options buying power no longer covers the order.
-An unfilled opening limit improves by at most one cent per monitor cycle and
-never crosses below the live natural credit. Because Alpaca reserves collateral
+**`run.py --loop`** owns the session lifecycle: it waits for the open, starts the
+monitor and the dashboard builder, supervises and restarts both, writes a final
+snapshot at each close, then sleeps to MCP's `next_open` across weekends and
+holidays without restarting itself. If the monitor cannot run, new entries fail
+closed. Reaching the daily trade cap locks new proposals but leaves risk
+monitoring active through the closing bell. `Ctrl+C` stops both processes.
+
+**Entry supervision is broker-backed.** Before any LLM request the loop reads the
+clock, calendar, open and same-day orders, positions, and account from MCP. It
+pauses outside the regular session, blocks while an order is pending, and counts
+filled parent entries from Alpaca rather than from process memory. Structured
+client IDs (`veto-open-YYYYMMDD-<decision>-rN`) group order-chase revisions as
+one logical trade, so a restart cannot reset the daily cap or forget a live
+order. An unfilled opening limit improves by at most one cent per cycle and
+never crosses below the live natural credit; because Alpaca reserves collateral
 while the old order is pending, replacement sizing first includes that order's
-releasable defined loss, then cancels, refreshes `options_buying_power` through
-MCP, and sizes again before submitting. Replacement EV uses the actual limit
-price, so midpoint-to-natural friction is not charged twice. An MCP
-<code>accepted</code> envelope is not treated as an order: the monitor polls
-<code>get_orders(status=all)</code> and records a successful chase only after the
-same client ID appears with an Alpaca broker order ID. Missing or terminal
-replacements are logged as failures.
-The configured account must also match MCP's live `account_number`.
-Ledger, monitor state, and MCP telemetry are stored below an account-specific
-runtime directory, so resetting keys cannot mix a previous account's decisions
-or profit-ratchet history into the current account's record.
+releasable defined loss, then cancels, refreshes `options_buying_power`, and
+sizes again. Replacement EV uses the actual limit price, so midpoint-to-natural
+friction is not charged twice. An MCP `accepted` envelope is not an order — only
+a `get_orders` match carrying an Alpaca broker order ID records a chase. Ledger,
+monitor state, and telemetry live under an account-specific runtime directory,
+so resetting keys cannot mix a previous account's history into this one.
 
-The dashboard's latest-position lifecycle joins the persisted deterministic exit
-reason to broker-owned orders and positions through MCP. It shows the trigger,
-high-water/floor evidence, parent close fill, gross locked P&L, and whether Alpaca
-confirms the entire account is flat; it never labels a local submission as a fill.
+**The dashboard** joins the persisted deterministic exit reason to broker-owned
+orders and positions through MCP, showing the trigger, high-water and floor
+evidence, the parent close fill, gross locked P&L, and whether Alpaca confirms
+the account is flat. It never labels a local submission as a fill. The 8% annual
+benchmark is converted to a geometric 252-day target — about $30.54 per day at
+$100k — and under the tournament objective it is measurement only.
 
-After a profitable close, the exited pair remains under MCP quote observation.
-The agent waits 15 minutes and requires 10 calm, liquid minutes before it may
-ask LLM for a new idea, and one profitable exit may earn up to three same-day
-re-entries. The re-entry gate still requires post-cost EV per defined-risk
-dollar at least matching the prior entry, with no worse delta, strike buffer, or
-liquidity and no identical OCC pair — every attempt clears the full economic
-gate, so relaxing the old arbitrary 25%-improvement bar admits more trades
-without admitting worse ones. Tournament re-entry uses 100% of live options
-buying power, matching the initial sizing objective. Risk exits lock re-entry for
-the rest of the session, and this lifecycle
-state is persisted across process restarts.
-
-LLM's activity page may show two calls near one timestamp. That is a bounded
-decision window: an invalid, unbuildable, or economically vetoed intent may receive
-one reasoned revision. An economic revision must materially diversify DTE,
-underlying, or strategy; broker/session failures receive no retry. The loop starts another window
-only after its next `PACAPOUNCE_SESSION_POLL_INTERVAL_SEC` MCP refresh says a new entry
-is still allowed. The risk monitor never creates entries.
-
-The dashboard still converts the 8% annual benchmark to a geometric
-252-trading-day target against Alpaca `last_equity`—about $30.54 per day at
-$100k. Under the tournament objective it is measurement only. Quantity instead uses 100% of
-the broker-reported options buying power after every other gate survives. The
-agent does not treat Alpaca's equity `multiplier` as options capital: options use
-their separate broker field and the maximum loss of the protected spread.
+**Re-entry** keeps an exited pair under quote observation: the agent waits 15
+minutes and requires 10 calm, liquid minutes before asking for a new idea, and
+one profitable exit may earn up to three same-day re-entries. The re-entry gate
+requires post-cost EV per defined-risk dollar at least matching the prior entry,
+with no worse delta, strike buffer, or liquidity and no identical OCC pair.
+Risk exits lock re-entry for the rest of the session, and that state persists
+across restarts.
 
 ## Does the gate actually work?
 
