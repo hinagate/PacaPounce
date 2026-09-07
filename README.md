@@ -29,6 +29,9 @@ process restarts. Public runtime configuration uses `PACAPOUNCE_*` variables.
 > Every result in this repository comes from that account; the dashboard verifies
 > the live account number matches before it shows a single figure.
 
+> **Start here:** [How it works: AI logic, risk gates, Alpaca infrastructure](#how-it-works-ai-logic-risk-gates-alpaca-infrastructure)
+> — the whole system in four diagrams.
+
 ### Run it in 60 seconds
 
 ```powershell
@@ -43,6 +46,219 @@ static host). Its first screen is deliberately operational: live account metrics
 open Alpaca positions, and a bounded decision log explaining what the agent did
 and why. The AI funnel, all 16 gates, P&L evidence, and the complete execution
 audit remain available in one expandable deep-dive section.
+
+---
+
+## How it works: AI logic, risk gates, Alpaca infrastructure
+
+> Read this section alone for the complete picture. Everything in it runs on
+> Alpaca paper account **`PA3ZX2FIASSZ`**, funded at **$100,000**, options
+> level 3. The rest of this README is the evidence behind each claim made here.
+
+### Capital: two lanes, one monitor
+
+Each lane owns its own share of **equity**, so neither can crowd the other out
+and a lane's allocation never depends on which lane filled first.
+
+```mermaid
+flowchart TD
+    EQ["Account equity · $100,000 paper<br/>split by policy, not by whoever fills first"]
+    EQ --> SL["SPREAD LANE · 10% of equity as defined loss"]
+    EQ --> LL["LONG-CALL LANE · up to 70% of equity in premium"]
+
+    SL --> SU["Universe · SPY + QQQ<br/>the deepest option markets there are"]
+    SU --> ST["Sell a defined-risk credit spread<br/>credit collected up front, maximum loss capped"]
+
+    LL --> LU["Universe · 12 liquid Nasdaq names<br/>oversold inside a long-term uptrend"]
+    LU --> LT["Buy one 14-30 DTE call near 0.70 delta<br/>premium paid is the maximum loss"]
+
+    ST --> MON["One 30-second monitor, both lanes<br/>Options only, never stock · deterministic exits · the LLM has no vote"]
+    LT --> MON
+
+    classDef eq fill:#fdf0e2,stroke:#c2751a,color:#12202e;
+    classDef spread fill:#e6effd,stroke:#1a56db,color:#12202e;
+    classDef longcall fill:#e7f5ec,stroke:#1a7f45,color:#12202e;
+    classDef mon fill:#12263f,stroke:#12263f,color:#ffffff;
+    class EQ eq;
+    class SL,SU,ST spread;
+    class LL,LU,LT longcall;
+    class MON mon;
+```
+
+### 1 · AI logic — the LLM proposes, it never disposes
+
+The LLM is creative but untrusted. It is grounded only in timestamped Alpaca MCP
+observations, it emits **intent JSON** rather than an order, and every number
+that reaches the broker is resolved by deterministic code afterwards.
+
+```mermaid
+flowchart TD
+    OBS["Alpaca MCP observation brief · cached 5 min<br/>spot · completed daily bars · 1D and 5D returns<br/>RV20 · nearest-ATM IV · IV/RV · quote timestamps<br/>missing fields stay missing, never imputed"]
+
+    subgraph LA["Lane A · credit spread — the LLM PROPOSES"]
+        direction TB
+        A1["LLM · gemini-3.7-flash"]
+        A2["Intent JSON only:<br/>direction · structure · delta target · DTE band<br/>never a strike, never a size, never an exit"]
+        A1 --> A2
+    end
+
+    subgraph LB["Lane B · long call — the LLM REVIEWS"]
+        direction TB
+        B1["Deterministic scan ranks the universe<br/>SMA200 rising · Wilder RSI-2 oversold · ATR"]
+        B2["LLM sees the top candidate plus<br/>timestamped Alpaca get_news output"]
+        B3["May veto a concrete event risk<br/>and writes the thesis — it cannot approve"]
+        B1 --> B2 --> B3
+    end
+
+    OBS --> A1
+    OBS --> B1
+
+    A2 --> COH{"Coherence check<br/>can ANY strike pair satisfy this delta target<br/>AND this max-loss cap?"}
+    COH -->|no| REJ["Rejected — free, before any chain lookup"]
+    COH -->|yes| BLD
+    B3 --> BLD
+
+    BLD["Contract builder · resolves intent against the LIVE chain<br/>real strikes · real bid/ask · real Greeks"]
+    BLD --> GATES["Deterministic gate stack — see section 2"]
+    GATES -->|fail| REJ
+    GATES -->|pass| EXEC["Executor · atomic multi-leg limit order · paper only"]
+    EXEC --> LED["Append-only verdict ledger<br/>every proposal, approved and rejected, stamped with the gate version"]
+    REJ --> LED
+
+    classDef ai fill:#f3e8fd,stroke:#7e22ce,color:#12202e;
+    classDef det fill:#e6effd,stroke:#1a56db,color:#12202e;
+    classDef bad fill:#fdeaea,stroke:#b91c1c,color:#12202e;
+    classDef good fill:#e7f5ec,stroke:#1a7f45,color:#12202e;
+    class A1,A2,B2,B3 ai;
+    class OBS,B1,COH,BLD,GATES,LED det;
+    class REJ bad;
+    class EXEC good;
+```
+
+| Decided by the LLM | Decided by tested deterministic code |
+|---|---|
+| Direction and structure | Strike selection, from the live chain |
+| Delta target and DTE band | Quantity and equity budget |
+| Event-risk veto and written thesis | Every exit: stop, ratchet, hold-EV, session limit |
+
+Because the model never names a strike, hallucinated OCC symbols, impossible
+strikes and malformed legs are removed as a *category* rather than patched case
+by case — and proposals become comparable to one another.
+
+The model also may not resample until something passes. One idea gets at most
+one reasoned revision, economic rejection must diversify DTE / underlying /
+strategy, and `--measure` mode runs unlimited proposals while executing nothing.
+Otherwise the gate stops being a filter and becomes a fitness function the LLM
+optimises against. See
+[Rejection sampling](#rejection-sampling-is-overfitting-at-execution-time).
+
+### 2 · Risk gates — 15 operational controls AND one economic gate
+
+Every gate must pass; there is no scoring or averaging. The distinguishing claim
+of this project is the **last** one: operational safety says a trade is
+*survivable*, and only the economic gate asks whether it is *paid for*.
+
+```mermaid
+flowchart TD
+    IN["Resolved contract · real chain prices"]
+
+    subgraph OPS["15 operational gates · all must pass"]
+        direction TB
+        O1["Structure · defined_risk"]
+        O2["Policy · allowlist"]
+        O3["Broker · alpaca_options_eligible"]
+        O4["Sizing · position_size"]
+        O5["Portfolio · open_positions · daily_trade_limit · no_duplicate"]
+        O6["Objective · annual_target_budget"]
+        O7["Market data · quote_freshness · liquidity"]
+        O8["Risk · max_loss_cap · total_risk_cap"]
+        O9["Execution · limit_order_only"]
+        O10["Economics · call_rebound_risk"]
+        O11["Lifecycle · reentry_quality"]
+        O1 --> O2 --> O3 --> O4 --> O5 --> O6 --> O7 --> O8 --> O9 --> O10 --> O11
+    end
+
+    IN --> O1
+    O11 --> EG{"ECONOMIC GATE · economic_ev<br/>tail SHAPE from per-strike implied vols<br/>vol LEVEL as EWMA realised over ATM implied<br/>drift stated as an 8%/yr assumption<br/>friction measured from real bid/ask, not mid"}
+
+    EG -->|"EV not positive"| REJ["Rejected · logged in full to the audit"]
+    EG -->|"EV positive, net of friction"| EXEC["Executor · paper only"]
+
+    EXEC --> POST
+
+    subgraph POST["Post-entry controls · 30-second monitor, no LLM vote"]
+        direction TB
+        P1["2x ATR14 underlying stop"]
+        P2["Profit ratchet · floor trailed on the executable bid<br/>an armed floor is always above breakeven"]
+        P3["hold_ev_negative · a held spread is re-priced<br/>by the entry EV model every 5 minutes"]
+        P4["budget_resize · issuer_concentration · holding-session limit"]
+        P5["An unfilled close is re-limited at the fresh bid,<br/>then escalated to market"]
+    end
+
+    classDef ops fill:#e6effd,stroke:#1a56db,color:#12202e;
+    classDef econ fill:#fdf0e2,stroke:#c2751a,color:#12202e;
+    classDef bad fill:#fdeaea,stroke:#b91c1c,color:#12202e;
+    classDef good fill:#e7f5ec,stroke:#1a7f45,color:#12202e;
+    class IN,O1,O2,O3,O4,O5,O6,O7,O8,O9,O10,O11 ops;
+    class EG econ;
+    class REJ bad;
+    class EXEC,P1,P2,P3,P4,P5 good;
+```
+
+Every verdict reports EV at **0%, 4% and 8% drift**, so a trade that only works
+if the equity risk premium shows up is visibly labelled as such. The stack is
+tested against outcomes rather than asserted: on 12,000 independent
+opportunities the economic gate separates approved from vetoed trades by
+**+$8.70 per trade** at *p* = 0.004, while an operational-only stack performs
+**worse than no filter at all** — it rejects trades for being large rather than
+for being underpaid ([evidence](#does-the-gate-actually-work)).
+
+### 3 · Alpaca infrastructure — one MCP path, fail-closed, paper-pinned
+
+There is no direct Alpaca REST fallback in the runnable agent. Everything —
+market data, eligibility, execution, reconciliation — goes through the official
+`alpaca-mcp-server` over stdio, and an incomplete snapshot fails closed rather
+than proceeding on stale data.
+
+```mermaid
+flowchart TD
+    RUN["run.py · single process<br/>--check / --propose / --trade / --measure / --loop"]
+    RUN --> MCP["Official Alpaca MCP server<br/>alpaca-mcp-server · stdio transport · 72 tools<br/>the only path to the broker"]
+
+    MCP --> T1["Session lifecycle<br/>get_clock · get_calendar · get_orders<br/>sleeps to next_open, rolls across sessions,<br/>reconciles pending locks after a restart"]
+    MCP --> T2["Market data<br/>get_stock_latest_quote · get_stock_bars<br/>get_option_chain · get_option_snapshot · get_news"]
+    MCP --> T3["Account state<br/>get_account_info · get_all_positions<br/>get_account_activities with activity_types FILL"]
+    MCP --> T4["Execution<br/>place_option_order with order_class mleg<br/>a negative limit_price means a credit"]
+
+    T3 --> AUTH{"Authorization snapshot — a trade input, not a statistic<br/>status ACTIVE · no broker or user trading block<br/>options approved and trading level 3 or higher<br/>positive options buying power"}
+    AUTH -->|"any field missing or failing"| STOP["Fail closed · no LLM call, no order"]
+    AUTH -->|"all fields pass"| T4
+
+    T1 --> CONF
+    T4 --> CONF["get_orders must confirm the client ID and the<br/>Alpaca broker order ID before SUBMITTED is recorded"]
+
+    CONF --> SAFE["Paper-only pins<br/>ALPACA_PAPER_TRADE=true fixed in veto/mcp_client.py<br/>trading base URL hard-coded to paper-api<br/>the dashboard renders nothing unless the live<br/>account number equals PA3ZX2FIASSZ"]
+
+    classDef infra fill:#e6effd,stroke:#1a56db,color:#12202e;
+    classDef guard fill:#fdf0e2,stroke:#c2751a,color:#12202e;
+    classDef bad fill:#fdeaea,stroke:#b91c1c,color:#12202e;
+    classDef good fill:#e7f5ec,stroke:#1a7f45,color:#12202e;
+    class RUN,MCP,T1,T2,T3,T4 infra;
+    class AUTH guard;
+    class STOP bad;
+    class CONF,SAFE good;
+```
+
+The authorization snapshot runs **twice** — before the LLM is called, and again
+immediately before submission — and the full deterministic gate stack is re-run
+against that second snapshot, so stale eligibility or buying power cannot reach
+the executor.
+
+**Where to go deeper:** [AI funnel and architecture](#architecture) ·
+[the economic gate](#the-economic-gate) · [sizing](#sizing) ·
+[Alpaca integration tool map](#alpaca-integration) ·
+[gate validation](#does-the-gate-actually-work) ·
+[honest limitations](#honest-limitations).
 
 ---
 
@@ -439,7 +655,7 @@ dishonest label.
   Contract builder ........... resolves intent against the LIVE chain
         |                       via Alpaca MCP. Real strikes, real
         v                       bid/ask, real Greeks.
-  Operational gates .......... 13 controls: defined risk, Alpaca eligibility,
+  Operational gates .......... 15 controls: defined risk, Alpaca eligibility,
         |                       options-BP collateral, allowlist, size,
         |                       duplicates, freshness, liquidity and limits
         v
@@ -719,7 +935,7 @@ veto/intent.py             intent schema + pre-chain coherence check
 veto/mcp_client.py         Alpaca MCP stdio client
 veto/session.py            MCP-owned session lifecycle and restart reconciliation
 veto/builder.py            intent -> real contracts from the live chain
-veto/gates.py              13 deterministic controls + the economic gate
+veto/gates.py              15 deterministic controls + the economic gate
 veto/executor.py           multi-leg paper orders
 veto/ledger.py             append-only verdict log
 scripts/build_dashboard.py renders/watches the atomic live dashboard snapshot
