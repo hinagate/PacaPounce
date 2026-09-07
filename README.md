@@ -9,14 +9,6 @@
 
 **The patient AI trading agent: it hunts, verifies, then pounces.**
 
-> **Disclaimer:** PacaPounce is an experimental prototype built and stress-tested
-> for one week in an Alpaca paper-trading hackathon. Any favorable paper result
-> is not evidence of future performance. This project is not financial advice
-> and should not be connected to a live brokerage account or used with real
-> money without independent review, validation, and appropriate safeguards.
-> You are solely responsible for any use of this software and assume all
-> resulting risk.
-
 The LLM is creative but untrusted: it can suggest any options thesis it likes,
 but only deterministic, independently tested policy is allowed to touch the
 broker.
@@ -28,6 +20,12 @@ process restarts. Public runtime configuration uses `PACAPOUNCE_*` variables.
 > **Paper account:** `PA3ZX2FIASSZ` · $100,000 start · options level 3.
 > Every result in this repository comes from that account; the dashboard verifies
 > the live account number matches before it shows a single figure.
+
+> **Result:** `$100,000.00` → **`$106,408.90`** — **+$6,408.90, +6.41%** — from
+> 6 option entries and 33 broker fills over the 2026-08-31 to 2026-09-04
+> window, with the account flat at the close. A window this short is variance,
+> not evidence of edge, and this README [makes that argument against its own
+> result](#honest-limitations).
 
 > **Start here:** [How it works: AI logic, risk gates, Alpaca infrastructure](#how-it-works-ai-logic-risk-gates-alpaca-infrastructure)
 > — the whole system in four diagrams.
@@ -849,3 +847,13 @@ tests/test_gates.py        gate tests, including the S13 case
 tests/test_session.py      close, pending-order, restart-count, and AI-block tests
 tests/test_regime.py       MCP feature calculation, selection, and prompt tests
 ```
+
+---
+
+> **Disclaimer:** PacaPounce is an experimental prototype built and stress-tested
+> for one week in an Alpaca paper-trading hackathon. Any favorable paper result
+> is not evidence of future performance. This project is not financial advice
+> and should not be connected to a live brokerage account or used with real
+> money without independent review, validation, and appropriate safeguards.
+> You are solely responsible for any use of this software and assume all
+> resulting risk.
