@@ -4,8 +4,6 @@
 
 > Originally built for the
 > [Alpaca AI Trading Agents Hackathon](https://lablab.ai/ai-hackathons/alpaca-ai-trading-agents-hackathon).
-> [HACKATHON_SUBMISSION.md](HACKATHON_SUBMISSION.md) records that week's paper
-> result and how the entry stack maps to the event's criteria.
 
 **The patient AI trading agent: it hunts, verifies, then pounces.**
 
@@ -25,7 +23,8 @@ process restarts. Public runtime configuration uses `PACAPOUNCE_*` variables.
 > 6 option entries and 33 broker fills over the 2026-08-31 to 2026-09-04
 > window, with the account flat at the close. A window this short is variance,
 > not evidence of edge, and this README [makes that argument against its own
-> result](#honest-limitations).
+> result](#honest-limitations). The published snapshot of that account is live
+> at [hinagate.github.io/PacaPounce/dashboard](https://hinagate.github.io/PacaPounce/dashboard/).
 
 > **Start here:** [How it works: AI logic, risk gates, Alpaca infrastructure](#how-it-works-ai-logic-risk-gates-alpaca-infrastructure)
 > — the whole system in four diagrams.
